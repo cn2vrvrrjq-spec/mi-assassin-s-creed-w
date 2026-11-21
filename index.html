@@ -1,0 +1,2786 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Quest WebXR</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="80" height="80" color="#5c7a4b"></a-plane>
+
+    <!-- Torre de sincronización -->
+    <a-box position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Carreta de pajar -->
+    <a-box id="haystack" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Guardias -->
+    <a-box id="guard1" class="guard" position="-6 1 -6" width="1" height="2" depth="1" color="#8b1e1e"
+      animation__patrol="property: position; from: -8 1 -6; to: 8 1 -6; dir: alternate; loop: true; dur: 4500; easing: linear">
+    </a-box>
+    <a-box id="guard2" class="guard" position="6 1 -10" width="1" height="2" depth="1" color="#8b1e1e"
+      animation__patrol="property: position; from: 7 1 -10; to: -7 1 -10; dir: alternate; loop: true; dur: 3800; easing: linear">
+    </a-box>
+
+    <!-- Rig del Jugador VR (Arriba de la torre) -->
+    <a-entity id="rig" position="0 12.1 -12" vr-movement>
+      <a-camera position="0 1.6 0">
+        <!-- HUD 3D pegado al visor -->
+        <a-text id="vrHud" value="Botón A: Salto de Fe | Gatillo Der: Hoja Oculta\nDeteccion: 0%" 
+                position="0 -0.45 -1.1" align="center" width="1.6" color="#fff"
+                geometry="primitive: plane; width: 1.3; height: 0.25" material="color: #111; opacity: 0.75">
+        </a-text>
+      </a-camera>
+
+      <!-- Control Izquierdo (Movimiento Joystick) -->
+      <a-entity id="leftHand" meta-touch-controls="hand: left" thumbstick-move></a-entity>
+
+      <!-- Control Derecho (Hoja Oculta y Salto) -->
+      <a-entity id="rightHand" meta-touch-controls="hand: right" hidden-blade>
+        <!-- Hoja oculta 3D -->
+        <a-box id="blade" position="0 -0.03 -0.18" width="0.02" height="0.01" depth="0.28" color="#d9d9d9" visible="false"></a-box>
+      </a-entity>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    const rig = document.querySelector('#rig');
+    const hud = document.querySelector('#vrHud');
+    const blade = document.querySelector('#blade');
+    const guards = Array.from(document.querySelectorAll('.guard'));
+
+    let detection = 0, isLeaping = false, gameOver = false;
+    let stickX = 0, stickY = 0;
+
+    // 1. Movimiento con joystick izquierdo
+    AFRAME.registerComponent('thumbstick-move', {
+      init: function () {
+        this.el.addEventListener('thumbstickmoved', (evt) => {
+          stickX = evt.detail.x;
+          stickY = evt.detail.y;
+        });
+      }
+    });
+
+    AFRAME.registerComponent('vr-movement', {
+      tick: function (time, delta) {
+        if (gameOver || isLeaping) return;
+        if (Math.abs(stickX) > 0.1 || Math.abs(stickY) > 0.1) {
+          const cam = this.el.querySelector('a-camera');
+          const rotY = cam.object3D.rotation.y;
+          const speed = (delta / 1000) * 4.5;
+          const pos = this.el.getAttribute('position');
+
+          pos.x += (stickX * Math.cos(rotY) + stickY * Math.sin(rotY)) * speed;
+          pos.z += (stickY * Math.cos(rotY) - stickX * Math.sin(rotY)) * speed;
+          this.el.setAttribute('position', pos);
+        }
+      }
+    });
+
+    // 2. Controles derechos: Gatillo = Hoja Oculta | Botón A = Salto de Fe | Botón B = Reiniciar
+    AFRAME.registerComponent('hidden-blade', {
+      init: function () {
+        // Gatillo para sacar hoja y eliminar guardia
+        this.el.addEventListener('triggerdown', () => {
+          blade.setAttribute('visible', 'true');
+          if (gameOver) return;
+
+          const pPos = rig.getAttribute('position');
+          let hit = false;
+          guards.forEach(g => {
+            if (!g.getAttribute('visible')) return;
+            const gPos = g.getAttribute('position');
+            if (Math.hypot(pPos.x - gPos.x, pPos.z - gPos.z) < 3.2) {
+              g.setAttribute('visible', 'false');
+              hit = true;
+            }
+          });
+
+          if (hit) {
+            hud.setAttribute('value', 'Requiescat in pace! Guardia eliminado.');
+            if (guards.every(g => !g.getAttribute('visible'))) {
+              gameOver = true;
+              hud.setAttribute('value', 'MISION CUMPLIDA! Cero flop. (Boton B: Reiniciar)');
+            }
+          }
+        });
+
+        this.el.addEventListener('triggerup', () => {
+          blade.setAttribute('visible', 'false');
+        });
+
+        // Botón A para Salto de Fe
+        this.el.addEventListener('abuttondown', () => {
+          if (gameOver || isLeaping) return;
+          isLeaping = true;
+          hud.setAttribute('value', 'SALTO DE FE AL PAJAR...');
+          rig.setAttribute('animation__jump', { property: 'position', to: '0 0.2 -4', dur: 1200, easing: 'easeInQuad' });
+          setTimeout(() => {
+            isLeaping = false;
+            hud.setAttribute('value', 'En el pajar (oculto). Usa joystick y gatillo.');
+          }, 1250);
+        });
+
+        // Botón B para reiniciar
+        this.el.addEventListener('bbuttondown', () => {
+          rig.removeAttribute('animation__jump');
+          rig.setAttribute('position', '0 12.1 -12');
+          guards.forEach(g => g.setAttribute('visible', 'true'));
+          detection = 0; isLeaping = false; gameOver = false;
+          hud.setAttribute('value', 'Boton A: Salto de Fe | Gatillo Der: Hoja Oculta\nDeteccion: 0%');
+        });
+      }
+    });
+
+    // 3. Sistema de sigilo y detección
+    setInterval(() => {
+      if (gameOver || isLeaping) return;
+      const pPos = rig.getAttribute('position');
+      const inHaystack = Math.abs(pPos.x) < 2.2 && Math.abs(pPos.z + 4) < 2.2 && pPos.y < 1.5;
+
+      if (pPos.y < 3 && !inHaystack) {
+        const spotted = guards.some(g => {
+          if (!g.getAttribute('visible')) return false;
+          const gPos = g.getAttribute('position');
+          return Math.hypot(pPos.x - gPos.x, pPos.z - gPos.z) < 4.5;
+        });
+
+        detection = spotted ? Math.min(100, detection + 25) : Math.max(0, detection - 10);
+        hud.setAttribute('value', `En tierra | Deteccion: ${detection}%\nGatillo Der: Hoja Oculta`);
+
+        if (detection >= 100) {
+          gameOver = true;
+          hud.setAttribute('value', 'TE CACHARON! Presiona Boton B para reiniciar.');
+        }
+      }
+    }, 250);
+  </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Parkour & AI</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="90" height="90" color="#5c7a4b"></a-plane>
+
+    <!-- Torre principal -->
+    <a-box class="climbable roof" position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Muros y azoteas para escalar y hacer parkour -->
+    <a-box class="climbable roof" position="-6 3.5 -11" width="4" height="7" depth="4" color="#9e896b"></a-box>
+    <a-box class="climbable roof" position="6 2 -9" width="4" height="4" depth="4" color="#8c785c"></a-box>
+
+    <!-- Carreta de pajar -->
+    <a-box id="haystack" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Guardias con IA (incluye indicador visual de sospecha/alerta arriba) -->
+    <a-entity class="guard" data-patrol-a="-8 0 -6" data-patrol-b="8 0 -6" position="-8 0 -6">
+      <a-box class="body" position="0 1 0" width="1" height="2" depth="1" color="#8b1e1e"></a-box>
+      <a-box position="0 1.4 0.52" width="0.7" height="0.25" depth="0.08" color="#222"></a-box>
+      <a-text class="alertIcon" value="" position="0 2.45 0" align="center" width="3" color="#ffae00" side="double"></a-text>
+    </a-entity>
+
+    <a-entity class="guard" data-patrol-a="7 0 -10" data-patrol-b="-7 0 -10" position="7 0 -10">
+      <a-box class="body" position="0 1 0" width="1" height="2" depth="1" color="#8b1e1e"></a-box>
+      <a-box position="0 1.4 0.52" width="0.7" height="0.25" depth="0.08" color="#222"></a-box>
+      <a-text class="alertIcon" value="" position="0 2.45 0" align="center" width="3" color="#ffae00" side="double"></a-text>
+    </a-entity>
+
+    <!-- Rig del Jugador VR -->
+    <a-entity id="rig" position="0 12.1 -12" player-controller>
+      <a-camera position="0 1.6 0">
+        <a-text id="vrHud"
+                value="Joy Izq: Mover | X: Parkour/Trepar | A: Salto de Fe\nGatillo Der: Hoja Oculta | B: Reiniciar"
+                position="0 -0.45 -1.1" align="center" width="1.65" color="#fff"
+                geometry="primitive: plane; width: 1.45; height: 0.28" material="color: #111; opacity: 0.78">
+        </a-text>
+      </a-camera>
+
+      <!-- Control Izquierdo: Joystick + Botón X (Parkour / Escalar) -->
+      <a-entity id="leftHand" meta-touch-controls="hand: left" left-hand-controls></a-entity>
+
+      <!-- Control Derecho: Gatillo (Hoja Oculta) + A (Salto de Fe) + B (Reiniciar) -->
+      <a-entity id="rightHand" meta-touch-controls="hand: right" right-hand-controls>
+        <a-box id="blade" position="0 -0.03 -0.18" width="0.02" height="0.01" depth="0.28" color="#d9d9d9" visible="false"></a-box>
+      </a-entity>
+    </a-entity>
+
+    <!-- Componente de IA Enemiga -->
+    <a-entity enemy-ai></a-entity>
+  </a-scene>
+
+  <script>
+    const rig = document.querySelector('#rig');
+    const hud = document.querySelector('#vrHud');
+    const blade = document.querySelector('#blade');
+    const guards = Array.from(document.querySelectorAll('.guard'));
+    const climbables = Array.from(document.querySelectorAll('.climbable'));
+
+    let stickX = 0, stickY = 0;
+    let isLeaping = false;
+    let isParkouring = false;
+    let gameOver = false;
+    let playerHealth = 100;
+
+    function resetGame() {
+      rig.removeAttribute('animation__jump');
+      rig.removeAttribute('animation__parkour');
+      rig.setAttribute('position', '0 12.1 -12');
+      playerHealth = 100;
+      isLeaping = false;
+      isParkouring = false;
+      gameOver = false;
+
+      guards.forEach(g => {
+        const start = g.getAttribute('data-patrol-a').split(' ').map(Number);
+        g.setAttribute('visible', 'true');
+        g.setAttribute('position', { x: start[0], y: start[1], z: start[2] });
+        g.userData = {
+          state: 'patrol', // patrol | suspicious | investigate | attack
+          suspicion: 0,
+          dirToB: true,
+          lastKnownPos: null,
+          attackCooldown: 0
+        };
+        const body = g.querySelector('.body');
+        if (body) body.setAttribute('color', '#8b1e1e');
+        const icon = g.querySelector('.alertIcon');
+        if (icon) icon.setAttribute('value', '');
+      });
+
+      hud.setAttribute('value', 'Vida: 100% | Joy Izq: Mover | X: Parkour/Trepar\nA: Salto de Fe | Gatillo Der: Hoja Oculta');
+    }
+
+    // Sistema de escalada y salto de parkour al pulsar X
+    function triggerParkourOrClimb() {
+      if (gameOver || isLeaping || isParkouring) return;
+
+      const cam = rig.querySelector('a-camera');
+      const rotY = cam.object3D.rotation.y;
+      const pos = rig.getAttribute('position');
+
+      // Dirección hacia donde mira el jugador en XZ
+      const forwardX = -Math.sin(rotY);
+      const forwardZ = -Math.cos(rotY);
+
+      // 1. Buscar muro escalable cercano enfrente para trepar a su cima
+      let targetClimb = null;
+      let bestClimbDist = 3.6;
+
+      climbables.forEach(el => {
+        const bPos = el.getAttribute('position');
+        const h = parseFloat(el.getAttribute('height') || 4);
+        const topY = bPos.y + h / 2;
+
+        // Solo trepa si el muro está más alto que los pies actuales
+        if (topY > pos.y + 0.4) {
+          const dx = bPos.x - pos.x;
+          const dz = bPos.z - pos.z;
+          const dist = Math.hypot(dx, dz);
+          const dot = (dx / (dist || 1)) * forwardX + (dz / (dist || 1)) * forwardZ;
+
+          if (dist < bestClimbDist && dot > 0.35) {
+            bestClimbDist = dist;
+            targetClimb = { x: bPos.x, y: topY, z: bPos.z };
+          }
+        }
+      });
+
+      isParkouring = true;
+
+      if (targetClimb) {
+        hud.setAttribute('value', 'Trepando muro...');
+        rig.setAttribute('animation__parkour', {
+          property: 'position',
+          to: `${targetClimb.x} ${targetClimb.y} ${targetClimb.z}`,
+          dur: 650,
+          easing: 'easeOutQuad'
+        });
+        setTimeout(() => {
+          isParkouring = false;
+          hud.setAttribute('value', `Vida: ${playerHealth}% | En azotea/muro`);
+        }, 680);
+        return;
+      }
+
+      // 2. Si no hay muro frente a ti, haz salto de parkour hacia adelante
+      const jumpDist = 3.2;
+      const destX = pos.x + forwardX * jumpDist;
+      const destZ = pos.z + forwardZ * jumpDist;
+
+      // Verifica si aterriza sobre alguna superficie/techo; si no, baja a suelo (y = 0)
+      let landingY = 0;
+      climbables.forEach(el => {
+        const bPos = el.getAttribute('position');
+        const w = parseFloat(el.getAttribute('width') || 4);
+        const d = parseFloat(el.getAttribute('depth') || 4);
+        const h = parseFloat(el.getAttribute('height') || 4);
+        const topY = bPos.y + h / 2;
+
+        if (Math.abs(destX - bPos.x) <= w / 2 + 0.5 && Math.abs(destZ - bPos.z) <= d / 2 + 0.5) {
+          if (topY > landingY && pos.y >= topY - 1.5) landingY = topY;
+        }
+      });
+
+      hud.setAttribute('value', 'Salto de parkour...');
+      rig.setAttribute('animation__parkour', {
+        property: 'position',
+        to: `${destX.toFixed(2)} ${landingY.toFixed(2)} ${destZ.toFixed(2)}`,
+        dur: 450,
+        easing: 'easeOutQuad'
+      });
+
+      setTimeout(() => {
+        isParkouring = false;
+      }, 480);
+    }
+
+    AFRAME.registerComponent('left-hand-controls', {
+      init: function () {
+        this.el.addEventListener('thumbstickmoved', (evt) => {
+          stickX = evt.detail.x;
+          stickY = evt.detail.y;
+        });
+        this.el.addEventListener('xbuttondown', () => {
+          triggerParkourOrClimb();
+        });
+      }
+    });
+
+    AFRAME.registerComponent('player-controller', {
+      tick: function (time, delta) {
+        if (gameOver || isLeaping || isParkouring) return;
+
+        const dt = delta / 1000;
+        const pos = this.el.getAttribute('position');
+
+        // Movimiento con joystick izquierdo
+        if (Math.abs(stickX) > 0.12 || Math.abs(stickY) > 0.12) {
+          const cam = this.el.querySelector('a-camera');
+          const rotY = cam.object3D.rotation.y;
+          const speed = 4.6 * dt;
+
+          pos.x += (stickX * Math.cos(rotY) + stickY * Math.sin(rotY)) * speed;
+          pos.z += (stickY * Math.cos(rotY) - stickX * Math.sin(rotY)) * speed;
+        }
+
+        // Gravedad simple si camina fuera de una azotea/torre y está alto
+        let supportY = 0;
+        climbables.forEach(el => {
+          const bPos = el.getAttribute('position');
+          const w = parseFloat(el.getAttribute('width') || 4);
+          const d = parseFloat(el.getAttribute('depth') || 4);
+          const h = parseFloat(el.getAttribute('height') || 4);
+          const topY = bPos.y + h / 2;
+
+          if (Math.abs(pos.x - bPos.x) <= w / 2 && Math.abs(pos.z - bPos.z) <= d / 2 && pos.y >= topY - 0.5) {
+            if (topY > supportY) supportY = topY;
+          }
+        });
+
+        const inHaystack = Math.abs(pos.x) < 2.25 && Math.abs(pos.z + 4) < 2.25;
+        if (inHaystack && pos.y < 1.6) {
+          supportY = 0.2;
+        }
+
+        if (pos.y > supportY) {
+          pos.y = Math.max(supportY, pos.y - 9.8 * dt);
+        }
+
+        this.el.setAttribute('position', pos);
+      }
+    });
+
+    AFRAME.registerComponent('right-hand-controls', {
+      init: function () {
+        // Gatillo derecho: Hoja oculta
+        this.el.addEventListener('triggerdown', () => {
+          blade.setAttribute('visible', 'true');
+          if (gameOver) return;
+
+          const pPos = rig.getAttribute('position');
+          let hit = false;
+
+          guards.forEach(g => {
+            if (!g.getAttribute('visible')) return;
+            const gPos = g.getAttribute('position');
+            if (Math.hypot(pPos.x - gPos.x, pPos.z - gPos.z) < 2.8 && Math.abs(pPos.y - gPos.y) < 2.0) {
+              g.setAttribute('visible', 'false');
+              hit = true;
+            }
+          });
+
+          if (hit) {
+            hud.setAttribute('value', 'Requiescat in pace! Guardia eliminado.');
+            if (guards.every(g => !g.getAttribute('visible'))) {
+              gameOver = true;
+              hud.setAttribute('value', 'MISION CUMPLIDA! Cero flop. (Boton B: Reiniciar)');
+            }
+          }
+        });
+
+        this.el.addEventListener('triggerup', () => {
+          blade.setAttribute('visible', 'false');
+        });
+
+        // Botón A: Salto de fe al pajar
+        this.el.addEventListener('abuttondown', () => {
+          if (gameOver || isLeaping) return;
+          isLeaping = true;
+          hud.setAttribute('value', 'SALTO DE FE AL PAJAR...');
+          rig.setAttribute('animation__jump', {
+            property: 'position',
+            to: '0 0.2 -4',
+            dur: 1150,
+            easing: 'easeInQuad'
+          });
+          setTimeout(() => {
+            isLeaping = false;
+            hud.setAttribute('value', 'En el pajar (oculto). Enemigos no te ven aqui.');
+          }, 1200);
+        });
+
+        // Botón B: Reiniciar
+        this.el.addEventListener('bbuttondown', () => {
+          resetGame();
+        });
+      }
+    });
+
+    // IA Enemiga: Patrulla -> Sospecha (te queda viendo) -> Investiga -> Ataca
+    AFRAME.registerComponent('enemy-ai', {
+      tick: function (time, delta) {
+        if (gameOver) return;
+        const dt = delta / 1000;
+        const pPos = rig.getAttribute('position');
+        const inHaystack = Math.abs(pPos.x) < 2.25 && Math.abs(pPos.z + 4) < 2.25 && pPos.y < 1.6;
+        const playerVisible = !inHaystack && pPos.y < 2.6;
+
+        guards.forEach(g => {
+          if (!g.getAttribute('visible')) return;
+          if (!g.userData || !g.userData.state) {
+            g.userData = { state: 'patrol', suspicion: 0, dirToB: true, lastKnownPos: null, attackCooldown: 0 };
+          }
+
+          const ud = g.userData;
+          const pos = g.getAttribute('position');
+          const body = g.querySelector('.body');
+          const icon = g.querySelector('.alertIcon');
+          if (ud.attackCooldown > 0) ud.attackCooldown -= dt;
+
+          const dx = pPos.x - pos.x;
+          const dz = pPos.z - pos.z;
+          const distToPlayer = Math.hypot(dx, dz);
+
+          // Rango de visión/detección cuando el jugador está al alcance
+          const canSpot = playerVisible && distToPlayer < 11;
+
+          if (canSpot) {
+            // Mirar hacia el jugador (quedarse viendo)
+            const angle = Math.atan2(dx, dz) * (180 / Math.PI);
+            g.setAttribute('rotation', `0 ${angle} 0`);
+            ud.lastKnownPos = { x: pPos.x, z: pPos.z };
+
+            const gainRate = distToPlayer < 5 ? 65 : 35;
+            ud.suspicion = Math.min(100, ud.suspicion + gainRate * dt);
+
+            if (ud.suspicion < 100) {
+              ud.state = 'suspicious';
+              body.setAttribute('color', '#c97a16');
+              icon.setAttribute('value', `? ${Math.floor(ud.suspicion)}%`);
+            } else {
+              ud.state = 'attack';
+              body.setAttribute('color', '#ff1e1e');
+              icon.setAttribute('value', '!');
+            }
+          } else {
+            // Pierde vista: baja sospecha poco a poco
+            ud.suspicion = Math.max(0, ud.suspicion - 18 * dt);
+            if (ud.suspicion === 0 && ud.state === 'suspicious') {
+              ud.state = 'patrol';
+              body.setAttribute('color', '#8b1e1e');
+              icon.setAttribute('value', '');
+            }
+          }
+
+          // Ejecución según estado
+          if (ud.state === 'patrol') {
+            const targetStr = ud.dirToB ? g.getAttribute('data-patrol-b') : g.getAttribute('data-patrol-a');
+            const [tx, ty, tz] = targetStr.split(' ').map(Number);
+            const mdx = tx - pos.x;
+            const mdz = tz - pos.z;
+            const mDist = Math.hypot(mdx, mdz);
+
+            if (mDist < 0.3) {
+              ud.dirToB = !ud.dirToB;
+            } else {
+              const speed = 2.2 * dt;
+              pos.x += (mdx / mDist) * speed;
+              pos.z += (mdz / mDist) * speed;
+              g.setAttribute('position', pos);
+              g.setAttribute('rotation', `0 ${Math.atan2(mdx, mdz) * (180 / Math.PI)} 0`);
+            }
+          } else if (ud.state === 'suspicious') {
+            // Se queda observando sospechoso sin moverse de golpe
+            icon.setAttribute('value', `? ${Math.floor(ud.suspicion)}%`);
+          } else if (ud.state ===
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Parkour, Grip & AI</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="90" height="90" color="#5c7a4b"></a-plane>
+
+    <!-- Torre principal -->
+    <a-box class="climbable roof" position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Muros y azoteas para escalar y hacer parkour -->
+    <a-box class="climbable roof" position="-6 3.5 -11" width="4" height="7" depth="4" color="#9e896b"></a-box>
+    <a-box class="climbable roof" position="6 2 -9" width="4" height="4" depth="4" color="#8c785c"></a-box>
+
+    <!-- Carreta de pajar -->
+    <a-box id="haystack" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Objetos agarrables con el gatillo trasero (grip) -->
+    <a-sphere class="grabbable" data-start="2 0.25 -5" position="2 0.25 -5" radius="0.22" color="#4a4e54"></a-sphere>
+    <a-sphere class="grabbable" data-start="-3 0.25 -4" position="-3 0.25 -4" radius="0.22" color="#4a4e54"></a-sphere>
+    <a-cylinder class="grabbable" data-start="4 0.35 -7" position="4 0.35 -7" radius="0.14" height="0.7" color="#2d6a4f"></a-cylinder>
+
+    <!-- Guardias con IA -->
+    <a-entity class="guard" data-patrol-a="-8 0 -6" data-patrol-b="8 0 -6" position="-8 0 -6">
+      <a-box class="body" position="0 1 0" width="1" height="2" depth="1" color="#8b1e1e"></a-box>
+      <a-box position="0 1.4 0.52" width="0.7" height="0.25" depth="0.08" color="#222"></a-box>
+      <a-text class="alertIcon" value="" position="0 2.45 0" align="center" width="3" color="#ffae00" side="double"></a-text>
+    </a-entity>
+
+    <a-entity class="guard" data-patrol-a="7 0 -10" data-patrol-b="-7 0 -10" position="7 0 -10">
+      <a-box class="body" position="0 1 0" width="1" height="2" depth="1" color="#8b1e1e"></a-box>
+      <a-box position="0 1.4 0.52" width="0.7" height="0.25" depth="0.08" color="#222"></a-box>
+      <a-text class="alertIcon" value="" position="0 2.45 0" align="center" width="3" color="#ffae00" side="double"></a-text>
+    </a-entity>
+
+    <!-- Rig del Jugador VR -->
+    <a-entity id="rig" position="0 12.1 -12" player-controller>
+      <a-camera position="0 1.6 0">
+        <a-text id="vrHud"
+                value="Joy Izq: Mover | X: Parkour | Gatillo Trasero: Agarrar\nA: Salto de Fe | Gatillo Der: Hoja Oculta | B: Reiniciar"
+                position="0 -0.45 -1.1" align="center" width="1.65" color="#fff"
+                geometry="primitive: plane; width: 1.5; height: 0.3" material="color: #111; opacity: 0.78">
+        </a-text>
+      </a-camera>
+
+      <!-- Control Izquierdo -->
+      <a-entity id="leftHand" meta-touch-controls="hand: left" left-hand-controls grip-grabber></a-entity>
+
+      <!-- Control Derecho -->
+      <a-entity id="rightHand" meta-touch-controls="hand: right" right-hand-controls grip-grabber>
+        <a-box id="blade" position="0 -0.03 -0.18" width="0.02" height="0.01" depth="0.28" color="#d9d9d9" visible="false"></a-box>
+      </a-
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Escondites, Grip & AI</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="90" height="90" color="#5c7a4b"></a-plane>
+
+    <!-- Torre principal -->
+    <a-box class="climbable roof" position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Muros y azoteas para escalar y hacer parkour -->
+    <a-box class="climbable roof" position="-6 3.5 -11" width="4" height="7" depth="4" color="#9e896b"></a-box>
+    <a-box class="climbable roof" position="6 2 -9" width="4" height="4" depth="4" color="#8c785c"></a-box>
+
+    <!-- Carreta de pajar (escondite principal) -->
+    <a-box id="haystack" class="hiding-spot" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Escondites extra: arbustos / cobertura baja en el patio -->
+    <a-box class="hiding-spot" position="-4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+    <a-box class="hiding-spot" position="4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+
+    <!-- Objetos agarrables con el gatillo trasero (grip) -->
+    <a-sphere class="grabbable" data-start="2 0.25 -5" position="2 0.25 -5" radius="0.22" color="#4a4e54"></a-sphere
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Hoja Oculta & Impacto</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="90" height="90" color="#5c7a4b"></a-plane>
+
+    <!-- Torre principal -->
+    <a-box class="climbable roof" position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Muros y azoteas para escalar y hacer parkour -->
+    <a-box class="climbable roof" position="-6 3.5 -11" width="4" height="7" depth="4" color="#9e896b"></a-box>
+    <a-box class="climbable roof" position="6 2 -9" width="4" height="4" depth="4" color="#8c785c"></a-box>
+
+    <!-- Carreta de pajar (escondite principal) -->
+    <a-box id="haystack" class="hiding-spot" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Escondites extra: arbustos / cobertura baja en el patio -->
+    <a-box class="hiding-spot" position="-4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+    <a-box class="hiding-spot" position="4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+
+    <!-- Objetos agarrables con el gatillo trasero (grip) -->
+    <a-sphere class="grabbable" data-start="2 0.25 -5" position="2 0.25 -5" radius="0.22" color="#4a4e54"></a-sphere>
+    <a-sphere class="grabbable" data-start="-3 0.25 -4" position="-3 0.25 -4" radius="0.22" color="#4a4e54"></a-sphere>
+    <a-cylinder class="grabbable" data-start="4 0.35 -7" position="4 0.35 -7" radius="0.14" height="0.7" color="#2d6a4f"></a-cylinder>
+
+    <!-- Guardias con IA -->
+    <a-entity class="guard" data-patrol-a="-8 0 -6" data-patrol-b="8 0 -6" position="-8 0 -6">
+      <a-box class="body" position="0 1 0" width="1" height="2" depth="1" color="#8b1e1e"></a-box>
+      <a-box position="0 1.4 0.52" width="0.7" height="0.25" depth="0.08" color="#222"></a-box>
+      <a-text class="alertIcon" value="" position="0 2.45 0" align="center" width="3" color="#ffae00" side="double"></a-text>
+    </a-entity>
+
+    <a-entity class="guard" data-patrol-a="7 0 -10" data-patrol-b="-7 0 -10" position="7 0 -10">
+      <a-box class="body" position="0 1 0" width="1" height="2" depth="1" color="#8b1e1e"></a-box>
+      <a-box position="0 1.4 0.52" width="0.7" height="0.25" depth="0.08" color="#222"></a-box>
+      <a-text class="alertIcon" value="" position="0 2.45 0" align="center" width="3" color="#ffae00" side="double"></a-text>
+    </a-entity>
+
+    <!-- Rig del Jugador VR -->
+    <a-entity id="rig" position="0 12.1 -12" player-controller>
+      <a-camera position="0 1.6 0">
+        <a-text id="vrHud"
+                value="Joy Izq: Mover | X: Parkour | Grip: Agarrar/Soltar\nA: Salto de Fe | Gatillo Der: Hoja Oculta | B: Reiniciar"
+                position="0 -0.45 -1.1" align="center" width="1.65" color="#fff"
+                geometry="primitive: plane; width: 1.5; height: 0.3" material="color: #111; opacity: 0.78">
+        </a-text>
+      </a-camera>
+
+      <!-- Control Izquierdo -->
+      <a-entity id="leftHand" meta-touch-controls="hand: left" left-hand-controls grip-grabber></a-entity>
+
+      <!-- Control Derecho -->
+      <a-entity id="rightHand" meta-touch-controls="hand: right" right-hand-controls grip-grabber>
+        <a-box id="blade" position="0 -0.03 -0.18" width="0.025" height="0.012" depth="0.32" color="#e6e6e6" visible="false"></a-box>
+      </a-entity>
+    </a-entity>
+
+    <!-- Contenedor para efectos de sangre e impactos -->
+    <a-entity id="effectsContainer"></a-entity>
+
+    <!-- Componente de IA Enemiga -->
+    <a-entity enemy-ai></a-entity>
+  </a-scene>
+
+  <script>
+    const sceneEl = document.querySelector('a-scene');
+    const rig = document
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Random Events & Open Map</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="90" height="90" color="#5c7a4b"></a-plane>
+
+    <!-- Torre principal -->
+    <a-box class="climbable roof" position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Muros y azoteas para escalar y hacer parkour -->
+    <a-box class="climbable roof" position="-6 3.5 -11" width="4" height="7" depth="4" color="#9e896b"></a-box>
+    <a-box class="climbable roof" position="6 2 -9" width="4" height="4" depth="4" color="#8c785c"></a-box>
+    <a-box class="climbable roof" position="-9 2.5 -2" width="4" height="5" depth="4" color="#968163"></a-box>
+    <a-box class="climbable roof" position="9 3 -3" width="4" height="6" depth="4" color="#a38e70"></a-box>
+
+    <!-- Carreta de pajar (escondite principal) -->
+    <a-box id="haystack" class="hiding-spot" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Escondites extra: arbustos / cobertura baja en el patio -->
+    <a-box class="hiding-spot" position="-4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+    <a-box class="hiding-spot" position="4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+
+    <!-- Objetos agarrables con el gatillo trasero (grip) -->
+    <a-sphere class="grabbable" data-start="2 0.25 -5" position="2 0.25 -5" radius="0.22" color="#4a4e54"></a-sphere>
+    <a-sphere class="grabbable" data-start="-3 0.25 -4" position="-3 0.25 -4" radius="0.22" color="#4a4e54"></a-sphere>
+    <a-cylinder class="grabbable" data-start="4 0.35 -7" position="4 0.35 -7" radius="0.14" height="0.7" color="#2d6a4f"></a-cylinder>
+
+    <!-- Contenedor dinámico de guardias y eventos aleatorios -->
+    <a-entity id="dynamicWorld"></a-entity>
+
+    <!-- Rig del Jugador VR -->
+    <a-entity id="rig" position="0 12.1 -12" player-controller>
+      <a-camera position="0 1.6 0">
+        <a-text id="vrHud"
+                value="Cargando misiones..."
+                position="0 -0
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Random Events & Open Map</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="90" height="90" color="#5c7a4b"></a-plane>
+
+    <!-- Torre principal -->
+    <a-box class="climbable roof" position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Muros y azoteas para escalar y hacer parkour -->
+    <a-box class="climbable roof" position="-6 3.5 -11" width="4" height="7" depth="4" color="#9e896b"></a-box>
+    <a-box class="climbable roof" position="6 2 -9" width="4" height="4" depth="4" color="#8c785c"></a-box>
+    <a-box class="climbable roof" position="-9 2.5 -2" width="4" height="5" depth="4" color="#968163"></a-box>
+    <a-box class="climbable roof" position="9 3 -3" width="4" height="6" depth="4" color="#a38e70"></a-box>
+
+    <!-- Carreta de pajar (escondite principal) -->
+    <a-box id="haystack" class="hiding-spot" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Escondites extra: arbustos / cobertura baja en el patio -->
+    <a-box class="hiding-spot" position="-4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+    <a-box class="hiding-spot" position="4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+
+    <!-- Objetos agarrables con el gatillo trasero (grip) -->
+    <a-sphere class="grabbable" data-start="2 0.25 -5" position="2 0.25 -5" radius="0.22" color="#4a4e54"></a-sphere>
+    <a-sphere class="grabbable" data-start="-3 0.25 -4" position="-3 0.25 -4" radius="0.22" color="#4a4e54"></a-sphere>
+    <a-cylinder class="grabbable" data-start="4 0.35 -7" position="4 0.35 -7" radius="0.14" height="0.7" color="#2d6a4f"></a-cylinder>
+
+    <!-- Contenedor dinámico de guardias y eventos aleatorios -->
+    <a-entity id="dynamicWorld"></a-entity>
+
+    <!-- Rig del Jugador VR -->
+    <a-entity id="rig" position="0 12.1 -12" player-controller>
+      <a-camera position="0 1.6 0">
+        <a-text id="vrHud"
+                value="Cargando misiones..."
+                position="0 -0.45 -1.1" align="center" width="1.65" color="#fff"
+                geometry="primitive: plane; width: 1.55; height: 0.32" material="color: #111; opacity: 0.8">
+        </a-text>
+      </a-camera>
+
+      <!-- Control Izquierdo -->
+      <a-entity id="leftHand" meta-touch-controls="hand: left" left-hand-controls grip-grabber></a-entity>
+
+      <!-- Control Derecho -->
+      <a-entity id="rightHand" meta-touch-controls="hand: right" right-hand-controls grip-grabber>
+        <a-box id="blade" position="0 -0.03 -0.18" width="0.025" height="0.012" depth="0.32" color="#e6e6e6" visible="false"></a-box>
+      </a-entity>
+    </a-entity>
+
+    <!-- Contenedor para efectos de sangre e impactos -->
+    <a-entity id="effectsContainer"></a-entity>
+
+    <!-- Componente de IA Enemiga y Eventos -->
+    <a-entity enemy-ai></a-entity>
+  </a-scene>
+
+  <script>
+    const sceneEl = document.querySelector('a-scene');
+    const rig = document.querySelector('#rig');
+    const hud = document.querySelector('#vrHud');
+    const blade = document.querySelector('#blade');
+    const effectsContainer = document.querySelector('#effectsContainer');
+    const dynamicWorld = document.querySelector('#dynamicWorld');
+    const climbables = Array.from(document.querySelectorAll('.climbable'));
+    const grabbables = Array.from(document.querySelectorAll('.grabbable'));
+    const hidingSpots = Array.from(document.querySelectorAll('.hiding-spot'));
+
+    let guards = [];
+    let stickX = 0, stickY = 0;
+    let isLeaping = false;
+    let isParkouring = false;
+    let isHidden = false;
+    let gameOver = false;
+    let playerHealth = 100;
+    let eventsCompleted = 0;
+    let currentEvent = null; // { type, title, targetGuards, lootEl, beaconEl }
+
+    const eventSpawnPoints = [
+      { x: -7, y: 0, z: -6 },
+      { x: 7, y: 0, z: -7 },
+      { x: 0, y: 0, z: 3 },
+      { x: -6, y: 7, z: -11 }, // arriba de azotea izquierda
+      { x: 9, y: 6, z: -3 },   // arriba de azotea derecha
+      { x: -9, y: 5, z: -2 }   // arriba de azotea oeste
+    ];
+
+    function updateHud(extraMsg = '') {
+      const missionText = currentEvent
+        ? `Mision (${eventsCompleted}): ${currentEvent.title}`
+        : `Misiones completadas: ${eventsCompleted} | Buscando evento...`;
+      const base = `Vida: ${playerHealth}% | ${missionText}\n${extraMsg || 'Joy Izq: Mover | X: Parkour | Grip: Agarrar | Gatillo: Hoja'}`;
+      hud.setAttribute('value', base);
+    }
+
+    function createGuard(x, y, z, patrolOffsetX, isVip = false) {
+      const g = document.createElement('a-entity');
+      g.classList.add('guard');
+      g.setAttribute('position', `${x} ${y} ${z}`);
+
+      const body = document.createElement('a-box');
+      body.classList.add('body');
+      body.setAttribute('position', '0 1 0');
+      body.setAttribute('width', isVip ? '1.1' : '1');
+      body.setAttribute('height', isVip ? '2.15' : '2');
+      body.setAttribute('depth', isVip ? '1.1' : '1');
+      body.setAttribute('color', isVip ? '#c89b3c' : '#8b1e1e');
+
+      const visor = document.createElement('a-box');
+      visor.setAttribute('position', '0 1.45 0.54');
+      visor.setAttribute('width', '0.7');
+      visor.setAttribute('height', '0.25');
+      visor.setAttribute('depth', '0.08');
+      visor.setAttribute('color', '#1a1a1a');
+
+      const icon = document.createElement('a-text');
+      icon.classList.add('alertIcon');
+      icon.setAttribute('value', isVip ? 'VIP' : '');
+      icon.setAttribute('position', '0 2.55 0');
+      icon.setAttribute('align', 'center');
+      icon.setAttribute('width', '3.2');
+      icon.setAttribute('color', isVip ? '#ffd700' : '#ffae00');
+      icon.setAttribute('side', 'double');
+
+      g.appendChild(body);
+      g.appendChild(visor);
+      g.appendChild(icon);
+
+      g.userData = {
+        isVip,
+        baseColor: isVip ? '#c89b3c' : '#8b1e1e',
+        patrolA: { x: x - patrolOffsetX, y, z },
+        patrolB: { x: x + patrolOffsetX, y, z },
+        state: 'patrol',
+        suspicion: 0,
+        dirToB: true,
+        lastKnownPos: null,
+        attackCooldown: 0,
+        dying: false
+      };
+
+      dynamicWorld.appendChild(g);
+      guards.push(g);
+      return g;
+    }
+
+    function createBeacon(x, y, z, color = '#ffd700') {
+      const beacon = document.createElement('a-cylinder');
+      beacon.setAttribute('position', `${x} ${y + 6} ${z}`);
+      beacon.setAttribute('radius', '0.18');
+      beacon.setAttribute('height', '12');
+      beacon.setAttribute('color', color);
+      beacon.setAttribute('material', 'opacity: 0.35; transparent: true');
+      dynamicWorld.appendChild(beacon);
+      return beacon;
+    }
+
+    function clearCurrentEventVisuals() {
+      if (!currentEvent) return;
+      if (currentEvent.beaconEl && currentEvent.beaconEl.parentNode) {
+        currentEvent.beaconEl.parentNode.removeChild(currentEvent.beaconEl);
+      }
+      if (currentEvent.lootEl && currentEvent.lootEl.parentNode) {
+        currentEvent.lootEl.parentNode.removeChild(currentEvent.lootEl);
+      }
+      currentEvent = null;
+    }
+
+    function spawnRandomEvent() {
+      if (gameOver) return;
+      clearCurrentEventVisuals();
+
+      const types = ['vip', 'steal', 'ambush'];
+      const chosenType = types[Math.floor(Math.random() * types.length)];
+      const spot = eventSpawnPoints[Math.floor(Math.random() * eventSpawnPoints.length)];
+
+      if (chosenType === 'vip') {
+        const vip = createGuard(spot.x, spot.y, spot.z, 3.5, true);
+        const beacon = createBeacon(spot.x, spot.y, spot.z, '#ffd700');
+        currentEvent = {
+          type: 'vip',
+          title: 'Elimina al Capitan Templario (Faro Dorado)',
+          targetGuards: [vip],
+          beaconEl: beacon
+        };
+      } else if (chosenType === 'steal') {
+        const loot = document.createElement('a-octahedron');
+        loot.classList.add('grabbable');
+        loot.setAttribute('position', `${spot.x} ${spot.y + 0.55} ${spot.z}`);
+        loot.setAttribute('radius', '0.35');
+        loot.setAttribute('color', '#00e5ff');
+        loot.setAttribute('animation__spin', {
+          property: 'rotation',
+          to: '0 360 0',
+          loop: true,
+          dur: 2500,
+          easing: 'linear'
+        });
+        loot.userData = { isMissionLoot: true, heldBy: null };
+        dynamicWorld.appendChild(loot);
+
+        const guard = createGuard(spot.x + 1.5, spot.y, spot.z + 1.5, 2.5, false);
+        const beacon = createBeacon(spot.x, spot.y, spot.z, '#00e5ff');
+        currentEvent = {
+          type: 'steal',
+          title: 'Roba la Reliquia Azul (Agarra o toca el cristal)',
+          targetGuards: [guard],
+          lootEl: loot,
+          beaconEl: beacon
+        };
+      } else {
+        const groundSpots = eventSpawnPoints.filter(s => s.y === 0);
+        const gSpot = groundSpots[Math.floor(Math.random() * groundSpots.length)];
+        const g1 = createGuard(gSpot.x - 2, 0, gSpot.z, 3, false);
+        const g2 = createGuard(gSpot.x + 2, 0, gSpot.z + 1, 3, false);
+        const beacon = createBeacon(gSpot.x, 0, gSpot.z, '#ff3b3b');
+        currentEvent = {
+          type: 'ambush',
+          title: 'Emboscada: Limpia los guardias del faro rojo',
+          targetGuards: [g1, g2],
+          beaconEl: beacon
+        };
+      }
+
+      updateHud('Nuevo evento aleatorio activo en el mapa!');
+    }
+
+    function completeCurrentEvent() {
+      eventsCompleted += 1;
+      playerHealth = Math.min(100, playerHealth + 20);
+      clearCurrentEventVisuals();
+      updateHud('EVENTO COMPLETADO! (+20 Vida) Siguiente en 3s...');
+      setTimeout(() => {
+        if (!gameOver) spawnRandomEvent();
+      }, 3000);
+    }
+
+    function spawnBloodSplatter(x, y, z) {
+      const stain = document.createElement('a-circle');
+      stain.setAttribute('rotation', '-90 0 0');
+      stain.setAttribute('radius', '0.55');
+      stain.setAttribute('color', '#7a0000');
+      stain.setAttribute('material', 'opacity: 0.85; transparent: true');
+      stain.setAttribute('position', `${x} ${Math.max(0.02, y - 1.08)} ${z}`);
+      effectsContainer.appendChild(stain);
+
+      for (let i = 0; i < 10; i++) {
+        const drop = document.createElement('a-sphere');
+        const angle = (Math.PI * 2 * i) / 10 + (Math.random() - 0.5) * 0.4;
+        const dist = 0.6 + Math.random() * 1.1;
+        const tx = x + Math.cos(angle) * dist;
+        const tz = z + Math.sin(angle) * dist;
+
+        drop.setAttribute('radius', (0.04 + Math.random() * 0.045).toFixed(3));
+        drop.setAttribute('color', i % 2 === 0 ? '#b30000' : '#800000');
+        drop.setAttribute('position', `${x} ${y} ${z}`);
+        drop.setAttribute('animation__arc', {
+          property: 'position',
+          to: `${tx.toFixed(2)} ${Math.max(0.05, y - 1.05)} ${tz.toFixed(2)}`,
+          dur: 420 + Math.floor(Math.random() * 180),
+          easing: 'easeInQuad'
+        });
+
+        effectsContainer.appendChild(drop);
+        setTimeout(() => {
+          if (drop.parentNode) drop.parentNode.removeChild(drop);
+        }, 1200);
+      }
+    }
+
+    function animateBladeThrust() {
+      blade.removeAttribute('animation__thrust');
+      blade.setAttribute('visible', 'true');
+      blade.setAttribute('position', '0 -0.03 -0.18');
+      blade.setAttribute('animation__thrust', {
+        property: 'position',
+        from: '0 -0.03 -0.18',
+        to: '0 -0.03 -0.44',
+        dur: 140,
+        dir: 'alternate',
+        loop: 1,
+        easing: 'easeOutQuad'
+      });
+    }
+
+    function assassinateGuard(guardEl) {
+      if (!guardEl.getAttribute('visible') || guardEl.userData.dying) return;
+      guardEl.userData.dying = true;
+
+      const gPos = guardEl.getAttribute('position');
+      spawnBloodSplatter(gPos.x, gPos.y + 1.1, gPos.z);
+
+      guardEl.setAttribute('animation__stabFall', {
+        property: 'rotation',
+        to: '85 0 0',
+        dur: 280,
+        easing: 'easeInQuad'
+      });
+
+      setTimeout(() => {
+        guardEl.setAttribute('visible', 'false');
+        if (guardEl.parentNode) guardEl.parentNode.removeChild(guardEl);
+        guards = guards.filter(g => g !== guardEl);
+
+        if (currentEvent && (currentEvent.type === 'vip' || currentEvent.type === 'ambush')) {
+          const remaining = currentEvent.targetGuards.filter(tg => tg.parentNode && tg.getAttribute('visible'));
+          if (remaining.length === 0) {
+            completeCurrentEvent();
+          }
+        }
+      }, 300);
+    }
+
+    function isPlayerInHidingSpot(pos) {
+      return hidingSpots.some(spot => {
+        const sPos = spot.getAttribute('position');
+        const w = parseFloat(spot.getAttribute('width') || 2.5);
+        const d = parseFloat(spot.getAttribute('depth') || 2.5);
+        const h = parseFloat(spot.getAttribute('height') || 1.5);
+        return Math.abs(pos.x - sPos.x) <= w / 2 + 0.35 &&
+               Math.abs(pos.z - sPos.z) <= d / 2 + 0.35 &&
+               pos.y <= h + 0.4;
+      });
+    }
+
+    function resetGame() {
+      rig.removeAttribute('animation__jump');
+      rig.removeAttribute('animation__parkour');
+      rig.setAttribute('position', '0 12.1 -12');
+      playerHealth = 100;
+      eventsCompleted = 0;
+      isLeaping = false;
+      isParkouring = false;
+      isHidden = false;
+      gameOver = false;
+      currentEvent = null;
+
+      while (effectsContainer.firstChild) {
+        effectsContainer.removeChild(effectsContainer.firstChild);
+      }
+      while (dynamicWorld.firstChild) {
+        dynamicWorld.removeChild(dynamicWorld.firstChild);
+      }
+      guards = [];
+
+      document.querySelectorAll('[grip-grabber]').forEach(handEl => {
+        const comp = handEl.components['grip-grabber'];
+        if (comp && comp.heldItem) {
+          comp.releaseItem();
+        }
+      });
+
+      grabbables.forEach(item => {
+        const start = item.getAttribute('data-start').split(' ').map(Number);
+        sceneEl.appendChild(item);
+        item.setAttribute('position', { x: start[0], y: start[1], z: start[2] });
+        item.userData.heldBy = null;
+      });
+
+      // Guardias base iniciales en el patio
+      createGuard(-8, 0, -6, 6, false);
+      createGuard(7, 0, -10, 6, false);
+
+      spawnRandomEvent();
+    }
+
+    AFRAME.registerComponent('grip-grabber', {
+      init: function () {
+        this.heldItem = null;
+
+        this.releaseItem = () => {
+          if (!this.heldItem) return;
+          const item = this.heldItem;
+          this.heldItem = null;
+          item.userData.heldBy = null;
+
+          const worldPos = new THREE.Vector3();
+          item.object3D.getWorldPosition(worldPos);
+          const dropY = Math.max(0.22, worldPos.y);
+
+          sceneEl.appendChild(item);
+          item.setAttribute('position', { x: worldPos.x, y: dropY, z: worldPos.z });
+
+          guards.forEach(g => {
+            if (!g.getAttribute('visible')) return;
+            const gPos = g.getAttribute('position');
+            if (Math.hypot(worldPos.x - gPos.x, worldPos.z - gPos.z) < 7.5) {
+              g.userData.lastKnownPos = { x: worldPos.x, z: worldPos.z };
+              g.userData.suspicion = Math.max(g.userData.suspicion, 55);
+              if (g.userData.state === 'patrol') {
+                g.userData.state = 'suspicious';
+                const body = g.querySelector('.body');
+                if (body) body.setAttribute('color', '#c97a16');
+              }
+            }
+          });
+        };
+
+        this.el.addEventListener('gripdown', () => {
+          if (gameOver || this.heldItem) return;
+
+          const rigPos = rig.getAttribute('position');
+          const handWorldPos = new THREE.Vector3();
+          this.el.object3D.getWorldPosition(handWorldPos);
+          const hx = handWorldPos.lengthSq() > 0 ? handWorldPos.x : rigPos.x;
+          const hy = handWorldPos.lengthSq() > 0 ? handWorldPos.y : rigPos.y + 1.2;
+          const hz = handWorldPos.lengthSq() > 0 ? handWorldPos.z : rigPos.z - 0.3;
+
+          const allItems = Array.from(document.querySelectorAll('.grabbable'));
+          let closest = null;
+          let bestDist = 2.8;
+
+          allItems.forEach(item => {
+            if (item.userData && item.userData.heldBy) return;
+            const iPos = item.getAttribute('position');
+            const d = Math.hypot(hx - iPos.x, hy - iPos.y, hz - iPos.z);
+            if (d < bestDist) {
+              bestDist = d;
+              closest = item;
+            }
+          });
+
+          if (closest) {
+            if (closest.userData && closest.userData.isMissionLoot && currentEvent && currentEvent.type === 'steal') {
+              completeCurrentEvent();
+              return;
+            }
+
+            this.heldItem = closest;
+            closest.userData.heldBy = this.el;
+            this.el.appendChild(closest);
+            closest.setAttribute('position', '0 -0.04 -0.16');
+            updateHud('Agarrando objeto... Suelta el gatillo trasero para soltar.');
+          }
+        });
+
+        this.el.addEventListener('gripup', () => {
+          if (this.heldItem) {
+            this.releaseItem();
+            updateHud('Objeto soltado.');
+          }
+        });
+      }
+    });
+
+    function triggerParkourOrClimb() {
+      if (gameOver || isLeaping || isParkouring) return;
+
+      const cam = rig.querySelector('a-camera');
+      const rotY = cam.object3D.rotation.y;
+      const pos = rig.getAttribute('position');
+      const forwardX = -Math.sin(rotY);
+      const forwardZ = -Math.cos(rotY);
+
+      let targetClimb = null;
+      let bestClimbDist = 3.6;
+
+      climbables.forEach(el => {
+        const bPos = el.getAttribute('position');
+        const h = parseFloat(el.getAttribute('height') || 4);
+        const topY = bPos.y + h / 2;
+
+        if (topY > pos.y + 0.4) {
+          const dx = bPos.x - pos.x;
+          const dz = bPos.z - pos.z;
+          const dist = Math.hypot(dx, dz);
+          const dot = (dx / (dist || 1)) * forwardX + (dz / (dist || 1)) * forwardZ;
+
+          if (dist < bestClimbDist && dot > 0.35) {
+            bestClimbDist = dist;
+            targetClimb = { x: bPos.x, y: topY, z: bPos.z };
+          }
+        }
+      });
+
+      isParkouring = true;
+
+      if (targetClimb) {
+        updateHud('Trepando muro...');
+        rig.setAttribute('animation__parkour', {
+          property: 'position',
+          to: `${targetClimb.x} ${targetClimb.y} ${targetClimb.z}`,
+          dur: 650,
+          easing: 'easeOutQuad'
+        });
+        setTimeout(() => {
+          isParkouring = false;
+          updateHud('En azotea/muro');
+        }, 680);
+        return;
+      }
+
+      const jumpDist = 3.2;
+      const destX = pos.x + forwardX * jumpDist;
+      const destZ = pos.z + forwardZ * jumpDist;
+
+      let landingY = 0;
+      climbables.forEach(el => {
+        const bPos = el.getAttribute('position');
+        const w = parseFloat(el.getAttribute('width') || 4);
+        const d = parseFloat(el.getAttribute('depth') || 4);
+        const h = parseFloat(el.getAttribute('height') || 4);
+        const topY = bPos.y + h / 2;
+
+        if (Math.abs(destX - bPos.x) <= w / 2 + 0.5 && Math.abs(destZ - bPos.z) <= d / 2 + 0.5) {
+          if (topY > landingY && pos.y >= topY - 1.5) landingY = topY;
+        }
+      });
+
+      updateHud('Salto de parkour...');
+      rig.setAttribute('animation__parkour', {
+        property: 'position',
+        to: `${destX.toFixed(2)} ${landingY.toFixed(2)} ${destZ.toFixed(2)}`,
+        dur: 450,
+        easing: 'easeOutQuad'
+      });
+
+      setTimeout(() => {
+        isParkouring = false;
+      }, 480);
+    }
+
+    AFRAME.registerComponent('left-hand-controls', {
+      init: function () {
+        this.el.addEventListener('thumbstickmoved', (evt) => {
+          stickX = evt.detail.x;
+          stickY = evt.detail.y;
+        });
+        this.el.addEventListener('xbuttondown', () => {
+          triggerParkourOrClimb();
+        });
+      }
+    });
+
+    AFRAME.registerComponent('player-controller', {
+      tick: function (time, delta) {
+        if (gameOver || isLeaping || isParkouring) return;
+
+        const dt = delta / 1000;
+        const pos = this.el.getAttribute('position');
+
+        if (Math.abs(stickX) > 0.12 || Math.abs(stickY) > 0.12) {
+          const cam = this.el.querySelector('a-camera');
+          const rotY = cam.object3D.rotation.y;
+          const speed = 4.6 * dt;
+
+          pos.x += (stickX * Math.cos(rotY) + stickY * Math.sin(rotY)) * speed;
+          pos.z += (stickY * Math.cos(rotY) - stickX * Math.sin(rotY)) * speed;
+        }
+
+        let supportY = 0;
+        climbables.forEach(el => {
+          const bPos = el.getAttribute('position');
+          const w = parseFloat(el.getAttribute('width') || 4);
+          const d = parseFloat(el.getAttribute('depth') || 4);
+          const h = parseFloat(el.getAttribute('height') || 4);
+          const topY = bPos.y + h / 2;
+
+          if (Math.abs(pos.x - bPos.x) <= w / 2 && Math.abs(pos.z - bPos.z) <= d / 2 && pos.y >= topY - 0.5) {
+            if (topY > supportY) supportY = topY;
+          }
+        });
+
+        const inHaystack = Math.abs(pos.x) < 2.25 && Math.abs(pos.z + 4) < 2.25;
+        if (inHaystack && pos.y < 1.6) {
+          supportY = 0.2;
+        }
+
+        if (pos.y > supportY) {
+          pos.y = Math.max(supportY, pos.y - 9.8 * dt);
+        }
+
+        this.el.setAttribute('position', pos);
+
+        // Detectar recolección por cercanía en misiones de robo
+        if (currentEvent && currentEvent.type === 'steal' && currentEvent.lootEl) {
+          const lPos = currentEvent.lootEl.getAttribute('position');
+          if (Math.hypot(pos.x - lPos.x, pos.z - lPos.z) < 1.6 && Math.abs(pos.y - lPos.y) < 1.8) {
+            completeCurrentEvent();
+          }
+        }
+
+        const nowHidden = isPlayerInHidingSpot(pos);
+        if (nowHidden !== isHidden) {
+          isHidden = nowHidden;
+          updateHud(isHidden ? 'ESCONDIDO (Pajar/Arbusto) - Nadie te ve' : 'Fuera de escondite');
+        }
+      }
+    });
+
+    AFRAME.registerComponent('right-hand-controls', {
+      init: function () {
+        this.el.addEventListener('triggerdown', () => {
+          animateBladeThrust();
+          if (gameOver) return;
+
+          const pPos = rig.getAttribute('position');
+          let hit = false;
+
+          guards.forEach(g => {
+            if (!g.getAttribute('visible') || (g.userData && g.userData.dying)) return;
+            const gPos = g.getAttribute('position');
+            if (Math.hypot(pPos.x - gPos.x, pPos.z - gPos.z) < 2.8 && Math.abs(pPos.y - gPos.y) < 2.0) {
+              assassinateGuard(g);
+              hit = true;
+            }
+          });
+
+          if (hit) {
+            updateHud('Requiescat in pace! Hoja clavada.');
+          }
+        });
+
+        this.el.addEventListener('triggerup', () => {
+          setTimeout(() => {
+            blade.setAttribute('visible', 'false');
+          }, 160);
+        });
+
+        this.el.addEventListener('abuttondown', () => {
+          if (gameOver || isLeaping) return;
+          isLeaping = true;
+          updateHud('SALTO DE FE AL PAJAR...');
+          rig.setAttribute('animation__jump', {
+            property: 'position',
+            to: '0 0.2 -4',
+            dur: 1150,
+            easing: 'easeInQuad'
+          });
+          setTimeout(() => {
+            isLeaping = false;
+            isHidden = true;
+            updateHud('En el pajar (oculto).');
+          }, 1200);
+        });
+
+        this.el.addEventListener('bbuttondown', () => {
+          resetGame();
+        });
+      }
+    });
+
+    AFRAME.registerComponent('enemy-ai', {
+      tick: function (time, delta) {
+        if (gameOver) return;
+        const dt = delta / 1000;
+        const pPos = rig.getAttribute('position');
+        const hiddenNow = isPlayerInHidingSpot(pPos);
+
+        guards.forEach(g => {
+          if (!g.getAttribute('visible') || (g.userData && g.userData.dying)) return;
+
+          const ud = g.userData;
+          const pos = g.getAttribute('position');
+          const body = g.querySelector('.body');
+          const icon = g.querySelector('.alertIcon');
+          if (ud.attackCooldown > 0) ud.attackCooldown -= dt;
+
+          // El guardia te ve si no estás escondido y están a altura similar
+          const sameLevel = Math.abs(pPos.y - pos.y) < 2.4;
+          const playerVisible = !hiddenNow && sameLevel;
+
+          const dx = pPos.x - pos.x;
+          const dz = pPos.z - pos.z;
+          const distToPlayer = Math.hypot(dx, dz);
+          const canSpot = playerVisible && distToPlayer < 11;
+
+          if (canSpot) {
+            const angle = Math.atan2(dx, dz) * (180 / Math.PI);
+            g.setAttribute('rotation', `0 ${angle} 0`);
+            ud.lastKnownPos = { x: pPos.x, z: pPos.z };
+
+            const gainRate = distToPlayer < 5 ? 65 : 35;
+            ud.suspicion = Math.min(100, ud.suspicion + gainRate * dt);
+
+            if (ud.suspicion < 100) {
+              ud.state = 'suspicious';
+              body.setAttribute('color', '#c97a16');
+              icon.setAttribute('value', `? ${Math.floor(ud.suspicion)}%`);
+            } else {
+              ud.state = 'attack';
+              body.setAttribute('color', '#ff1e1e');
+              icon.setAttribute('value', '!');
+            }
+          } else {
+            ud.suspicion = Math.max(0, ud.suspicion - 18 * dt);
+            if (ud.suspicion === 0 && ud.state === 'suspicious') {
+              ud.state = 'patrol';
+              body.setAttribute('color', ud.baseColor);
+              icon.setAttribute('value', ud.isVip ? 'VIP' : '');
+            }
+          }
+
+          if (ud.state === 'patrol') {
+            const target = ud.dirToB ? ud.patrolB : ud.patrolA;
+            const mdx = target.x - pos.x;
+            const mdz = target.z - pos.z;
+            const mDist = Math.hypot(mdx, mdz);
+
+            if (mDist < 0.3) {
+              ud.dirToB = !ud.dirToB;
+            } else {
+              const speed = 2.2 * dt;
+              pos.x += (mdx / mDist) * speed;
+              pos.z += (mdz / mDist) * speed;
+              g.setAttribute('position', pos);
+              g.setAttribute('rotation', `0 ${Math.atan2(mdx, mdz) * (180 / Math.PI)} 0`);
+            }
+          } else if (ud.state === 'suspicious') {
+            icon.setAttribute('value', `? ${Math.floor(ud.suspicion)}%`);
+          } else if (ud.state === 'attack') {
+            if (!playerVisible || distToPlayer > 14) {
+              if (ud.lastKnownPos) {
+                const ldx = ud.lastKnownPos.x - pos.x;
+                const ldz = ud.lastKnownPos.z - pos.z;
+                const lDist = Math.hypot(ldx, ldz);
+                if (lDist > 0.5) {
+                  const speed = 3.2 * dt;
+                  pos.x += (ldx / lDist) * speed;
+                  pos.z += (ldz / lDist) * speed;
+                  g.setAttribute('position', pos);
+                } else {
+                  ud.state = 'suspicious';
+                  ud.suspicion = 40;
+                  body.setAttribute('color', '#c97a16');
+                }
+              }
+            } else if (distToPlayer > 1.7) {
+              const speed = 3.6 * dt;
+              pos.x += (dx / distToPlayer) * speed;
+              pos.z += (dz / distToPlayer) * speed;
+              g.setAttribute('position', pos);
+            } else if (ud.attackCooldown <= 0) {
+              ud.attackCooldown = 1.2;
+              playerHealth = Math.max(0, playerHealth - 25);
+              updateHud(`TE ATACARON! (-25 Vida) | B: Reiniciar`);
+
+              if (playerHealth <= 0) {
+                gameOver = true;
+                hud.setAttribute('value', `DESINCRONIZADO! Misiones hechas: ${eventsCompleted}\nPresiona B para reiniciar.`);
+              }
+            }
+          }
+        });
+      }
+    });
+
+    resetGame();
+  </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Stealth, Throwing Knives, Ragdoll & NPCs</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="90" height="90" color="#5c7a4b"></a-plane>
+
+    <!-- Torre principal -->
+    <a-box class="climbable roof" position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Muros y azoteas -->
+    <a-box class="climbable roof" position="-6 3.5 -11" width="4" height="7" depth="4" color="#9e896b"></a-box>
+    <a-box class="climbable roof" position="6 2 -9" width="4" height="4" depth="4" color="#8c785c"></a-box>
+    <a-box class="climbable roof" position="-9 2.5 -2" width="4" height="5" depth="4" color="#968163"></a-box>
+    <a-box class="climbable roof" position="9 3 -3" width="4" height="6" depth="4" color="#a38e70"></a-box>
+
+    <!-- Carreta de pajar (escondite principal) -->
+    <a-box id="haystack" class="hiding-spot" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Escondites extra -->
+    <a-box class="hiding-spot" position="-4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+    <a-box class="hiding-spot" position="4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+
+    <!-- Contenedores dinámicos -->
+    <a-entity id="dynamicWorld"></a-entity>
+    <a-entity id="effectsContainer"></a-entity>
+    <a-entity id="ragdollContainer"></a-entity>
+
+    <!-- Rig del Jugador VR -->
+    <a-entity id="rig" position="0 12.1 -12" player-controller>
+      <a-camera position="0 1.6 0">
+        <a-text id="vrHud"
+                value="Cargando..."
+                position="0 -0.45 -1.1" align="center" width="1.65" color="#fff"
+                geometry="primitive: plane; width: 1.6; height: 0.34" material="color: #111; opacity: 0.82">
+        </a-text>
+      </a-camera>
+
+      <!-- Control Izquierdo -->
+      <a-entity id="leftHand" meta-touch-controls="hand: left" left-hand-controls grip-grabber></a-entity>
+
+      <!-- Control Derecho -->
+      <a-entity id="rightHand" meta-touch-controls="hand: right" right-hand-controls grip-grabber>
+        <a-box id="blade" position="0 -0.03 -0.18" width="0.025" height="0.012" depth="0.32" color="#e6e6e6" visible="false"></a-box>
+      </a-entity>
+    </a-entity>
+
+    <!-- Sistemas de IA, Ragdoll y Proyectiles -->
+    <a-entity world-systems></a-entity>
+  </a-scene>
+
+  <script>
+    const sceneEl = document.querySelector('a-scene');
+    const rig = document.querySelector('#rig');
+    const hud = document.querySelector('#vrHud');
+    const blade = document.querySelector('#blade');
+    const effectsContainer = document.querySelector('#effectsContainer');
+    const dynamicWorld = document.querySelector('#dynamicWorld');
+    const ragdollContainer = document.querySelector('#ragdollContainer');
+    const climbables = Array.from(document.querySelectorAll('.climbable'));
+    const hidingSpots = Array.from(document.querySelectorAll('.hiding-spot'));
+
+    let guards = [];
+    let civilians = [];
+    let corpses = [];
+    let flyingKnives = [];
+    let activeRagdolls = [];
+
+    let stickX = 0, stickY = 0;
+    let isLeaping = false;
+    let isParkouring = false;
+    let isHidden = false;
+    let gameOver = false;
+    let playerHealth = 100;
+    let eventsCompleted = 0;
+    let currentEvent = null;
+
+    const eventSpawnPoints = [
+      { x: -7, y: 0, z: -6 },
+      { x: 7, y: 0, z: -7 },
+      { x: 0, y: 0, z: 3 },
+      { x: -6, y: 7, z: -11 },
+      { x: 9, y: 6, z: -3 },
+      { x: -9, y: 5, z: -2 }
+    ];
+
+    function updateHud(extraMsg = '') {
+      const missionText = currentEvent
+        ? `Mision (${eventsCompleted}): ${currentEvent.title}`
+        : `Misiones: ${eventsCompleted}`;
+      hud.setAttribute('value', `Vida: ${playerHealth}% | ${missionText}\n${extraMsg || 'Y: Lanzar Cuchillo | Grip: Agarrar | Gatillo: Hoja | X: Parkour'}`);
+    }
+
+    // 1. Crear cuchillos lanzables en el escenario
+    function spawnThrowingKnife(x
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Assassino VR - Stealth, Throwing Knives, Ragdoll & NPCs</title>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+</head>
+<body>
+  <a-scene background="color: #87ceeb" fog="type: exponential; color: #b8d8e8; density: 0.015" webxr="requiredFeatures: local-floor">
+    <a-light type="ambient" intensity="0.75"></a-light>
+    <a-light type="directional" position="10 25 10" intensity="0.9"></a-light>
+
+    <!-- Suelo -->
+    <a-plane rotation="-90 0 0" width="90" height="90" color="#5c7a4b"></a-plane>
+
+    <!-- Torre principal -->
+    <a-box class="climbable roof" position="0 6 -12" width="5" height="12" depth="5" color="#b09b7c"></a-box>
+    <a-cylinder position="0 13 -12" radius="0.3" height="2" color="#c89b3c"></a-cylinder>
+
+    <!-- Muros y azoteas -->
+    <a-box class="climbable roof" position="-6 3.5 -11" width="4" height="7" depth="4" color="#9e896b"></a-box>
+    <a-box class="climbable roof" position="6 2 -9" width="4" height="4" depth="4" color="#8c785c"></a-box>
+    <a-box class="climbable roof" position="-9 2.5 -2" width="4" height="5" depth="4" color="#968163"></a-box>
+    <a-box class="climbable roof" position="9 3 -3" width="4" height="6" depth="4" color="#a38e70"></a-box>
+
+    <!-- Carreta de pajar (escondite principal) -->
+    <a-box id="haystack" class="hiding-spot" position="0 0.8 -4" width="4.5" height="1.6" depth="4.5" color="#e3b23c"></a-box>
+    <a-box position="0 0.2 -4" width="4.8" height="0.4" depth="4.8" color="#6e472b"></a-box>
+
+    <!-- Escondites extra -->
+    <a-box class="hiding-spot" position="-4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+    <a-box class="hiding-spot" position="4.5 0.65 -3" width="2.4" height="1.3" depth="2.4" color="#2d5a27"></a-box>
+
+    <!-- Contenedores dinámicos -->
+    <a-entity id="dynamicWorld"></a-entity>
+    <a-entity id="effectsContainer"></a-entity>
+    <a-entity id="ragdollContainer"></a-entity>
+
+    <!-- Rig del Jugador VR -->
+    <a-entity id="rig" position="0 12.1 -12" player-controller>
+      <a-camera position="0 1.6 0">
+        <a-text id="vrHud"
+                value="Cargando..."
+                position="0 -0.45 -1.1" align="center" width="1.65" color="#fff"
+                geometry="primitive: plane; width: 1.6; height: 0.34" material="color: #111; opacity: 0.82">
+        </a-text>
+      </a-camera>
+
+      <!-- Control Izquierdo -->
+      <a-entity id="leftHand" meta-touch-controls="hand: left" left-hand-controls grip-grabber></a-entity>
+
+      <!-- Control Derecho -->
+      <a-entity id="rightHand" meta-touch-controls="hand: right" right-hand-controls grip-grabber>
+        <a-box id="blade" position="0 -0.03 -0.18" width="0.025" height="0.012" depth="0.32" color="#e6e6e6" visible="false"></a-box>
+      </a-entity>
+    </a-entity>
+
+    <!-- Sistemas de IA, Ragdoll y Proyectiles -->
+    <a-entity world-systems></a-entity>
+  </a-scene>
+
+  <script>
+    const sceneEl = document.querySelector('a-scene');
+    const rig = document.querySelector('#rig');
+    const hud = document.querySelector('#vrHud');
+    const blade = document.querySelector('#blade');
+    const effectsContainer = document.querySelector('#effectsContainer');
+    const dynamicWorld = document.querySelector('#dynamicWorld');
+    const ragdollContainer = document.querySelector('#ragdollContainer');
+    const climbables = Array.from(document.querySelectorAll('.climbable'));
+    const hidingSpots = Array.from(document.querySelectorAll('.hiding-spot'));
+
+    let guards = [];
+    let civilians = [];
+    let corpses = [];
+    let flyingKnives = [];
+    let activeRagdolls = [];
+
+    let stickX = 0, stickY = 0;
+    let isLeaping = false;
+    let isParkouring = false;
+    let isHidden = false;
+    let gameOver = false;
+    let playerHealth = 100;
+    let eventsCompleted = 0;
+    let currentEvent = null;
+
+    const eventSpawnPoints = [
+      { x: -7, y: 0, z: -6 },
+      { x: 7, y: 0, z: -7 },
+      { x: 0, y: 0, z: 3 },
+      { x: -6, y: 7, z: -11 },
+      { x: 9, y: 6, z: -3 },
+      { x: -9, y: 5, z: -2 }
+    ];
+
+    function updateHud(extraMsg = '') {
+      const missionText = currentEvent
+        ? `Mision (${eventsCompleted}): ${currentEvent.title}`
+        : `Misiones: ${eventsCompleted}`;
+      hud.setAttribute('value', `Vida: ${playerHealth}% | ${missionText}\n${extraMsg || 'Y: Lanzar Cuchillo | Grip: Agarrar | Gatillo: Hoja | X: Parkour'}`);
+    }
+
+    // 1. Crear cuchillos lanzables en el escenario
+    function spawnThrowingKnife(x, y, z) {
+      const knife = document.createElement('a-entity');
+      knife.classList.add('grabbable', 'throwing-knife');
+      knife.setAttribute('position', `${x} ${y} ${z}`);
+
+      const handle = document.createElement('a-box');
+      handle.setAttribute('width', '0.03');
+      handle.setAttribute('height', '0.03');
+      handle.setAttribute('depth', '0.14');
+      handle.setAttribute('position', '0 0 0.08');
+      handle.setAttribute('color', '#4a2e1b');
+
+      const steel = document.createElement('a-box');
+      steel.setAttribute('width', '0.025');
+      steel.setAttribute('height', '0.008');
+      steel.setAttribute('depth', '0.26');
+      steel.setAttribute('position', '0 0 -0.1');
+      steel.setAttribute('color', '#dce3ea');
+
+      knife.appendChild(handle);
+      knife.appendChild(steel);
+      knife.userData = { isKnife: true, heldBy: null };
+      dynamicWorld.appendChild(knife);
+      return knife;
+    }
+
+    // 2. Crear personaje articulado (para que al morir se desarme en ragdoll)
+    function buildArticulatedCharacter(bodyColor, headColor = '#e0b18c', isVip = false) {
+      const root = document.createElement('a-entity');
+      const scale = isVip ? 1.08 : 1.0;
+
+      const torso = document.createElement('a-box');
+      torso.classList.add('body');
+      torso.setAttribute('position', `0 ${1.15 * scale} 0`);
+      torso.setAttribute('width', 0.55 * scale);
+      torso.setAttribute('height', 0.75 * scale);
+      torso.setAttribute('depth', 0.32 * scale);
+      torso.setAttribute('color', bodyColor);
+
+      const head = document.createElement('a-box');
+      head.setAttribute('position', `0 ${1.72 * scale} 0`);
+      head.setAttribute('width', 0.34 * scale);
+      head.setAttribute('height', 0.34 * scale);
+      head.setAttribute('depth', 0.34 * scale);
+      head.setAttribute('color', headColor);
+
+      const visor = document.createElement('a-box');
+      visor.setAttribute('position', `0 ${1.74 * scale} ${0.18 * scale}`);
+      visor.setAttribute('width', 0.28 * scale);
+      visor.setAttribute('height', 0.1 * scale);
+      visor.setAttribute('depth', 0.04 * scale);
+      visor.setAttribute('color', '#1a1a1a');
+
+      const leftArm = document.createElement('a-box');
+      leftArm.setAttribute('position', `${-0.38 * scale} ${1.15 * scale} 0`);
+      leftArm.setAttribute('width', 0.16 * scale);
+      leftArm.setAttribute('height', 0.68 * scale);
+      leftArm.setAttribute('depth', 0.16 * scale);
+      leftArm.setAttribute('color', bodyColor);
+
+      const rightArm = document.createElement('a-box');
+      rightArm.setAttribute('position', `${0.38 * scale} ${1.15 * scale} 0`);
+      rightArm.setAttribute('width', 0.16 * scale);
+      rightArm.setAttribute('height', 0.68 * scale);
+      rightArm.setAttribute('depth', 0.16 * scale);
+      rightArm.setAttribute('color', bodyColor);
+
+      const leftLeg = document.createElement('a-box');
+      leftLeg.setAttribute('position', `${-0.15 * scale} ${0.42 * scale} 0`);
+      leftLeg.setAttribute('width', 0.2 * scale);
+      leftLeg.setAttribute('height', 0.75 * scale);
+      leftLeg.setAttribute('depth', 0.2 * scale);
+      leftLeg.setAttribute('color', '#2b2b2b');
+
+      const rightLeg = document.createElement('a-box');
+      rightLeg.setAttribute('position', `${0.15 * scale} ${0.42 * scale} 0`);
+      rightLeg.setAttribute('width', 0.2 * scale);
+      rightLeg.setAttribute('height', 0.75 * scale);
+      rightLeg.setAttribute('depth', 0.2 * scale);
+      rightLeg.setAttribute('color', '#2b2b2b');
+
+      root.appendChild(torso);
+      root.appendChild(head);
+      root.appendChild(visor);
+      root.appendChild(leftArm);
+      root.appendChild(rightArm);
+      root.appendChild(leftLeg);
+      root.appendChild(rightLeg);
+
+      return root;
+    }
+
+    // 3. Simulación de Ragdoll estilo Euphoria (reacción física al impacto + colapso articulado)
+    function spawnEuphoriaRagdoll(pos, impactDir, bodyColor, isSilent = false) {
+      const ragGroup = document.createElement('a-entity');
+      const partsSpec = [
+        { name: 'torso', offset: [0, 1.15, 0], size: [0.55, 0.75, 0.32], color: bodyColor, mass: 1.0 },
+        { name: 'head', offset: [0, 1.72, 0], size: [0.34, 0.34, 0.34], color: '#e0b18c', mass: 0.7 },
+        { name: 'lArm', offset: [-0.38, 1.15, 0], size: [0.16, 0.68, 0.16], color: bodyColor, mass: 0.6 },
+        { name: 'rArm', offset: [0.38, 1.15, 0], size: [0.16, 0.68, 0.16], color: bodyColor, mass: 0.6 },
+        { name: 'lLeg', offset: [-0.15, 0.42, 0], size: [0.2, 0.75, 0.2], color: '#2b2b2b', mass: 0.8 },
+        { name: 'rLeg', offset: [0.15, 0.42, 0], size: [0.2, 0.75, 0.2], color: '#2b2b2b', mass: 0.8 }
+      ];
+
+      const forceMag = isSilent ? 1.4 : 3.6;
+      const parts = partsSpec.map(spec => {
+        const el = document.createElement('a-box');
+        el.setAttribute('width', spec.size[0]);
+        el.setAttribute('height', spec.size[1]);
+        el.setAttribute('depth', spec.size[2]);
+        el.setAttribute('color', spec.color);
+        el.setAttribute('position', `${pos.x + spec.offset[0]} ${pos.y + spec.offset[1]} ${pos.z + spec.offset[2]}`);
+        ragGroup.appendChild(el);
+
+        // Euphoria-like self-balancing twitch antes de caer del todo
+        const jitterX = (Math.random() - 0.5) * 1.4;
+        const jitterZ = (Math.random() - 0.5) * 1.4;
+        return {
+          el,
+          halfH: spec.size[1] / 2,
+          floorY: pos.y,
+          vx: (impactDir.x * forceMag + jitterX) / spec.mass,
+          vy: (1.2 + Math.random() * 1.4) / spec.mass,
+          vz: (impactDir.z * forceMag + jitterZ) / spec.mass,
+          rx: (Math.random() - 0.5) * 260,
+          ry: (Math.random() - 0.5) * 220,
+          rz: (Math.random() - 0.5) * 260,
+          settled: false
+        };
+      });
+
+      ragdollContainer.appendChild(ragGroup);
+      const corpseRecord = { x: pos.x, y: pos.y, z: pos.z, isSilent, time: performance.now() };
+      corpses.push(corpseRecord);
+      activeRagdolls.push({ group: ragGroup, parts, corpseRecord });
+    }
+
+    function createGuard(x, y, z, patrolOffsetX, isVip = false) {
+      const g = document.createElement('a-entity');
+      g.classList.add('guard');
+      g.setAttribute('position', `${x} ${y} ${z}`);
+
+      const baseColor = isVip ? '#c89b3c' : '#8b1e1e';
+      const charMesh = buildArticulatedCharacter(baseColor, '#e0b18c', isVip);
+      g.appendChild(charMesh);
+
+      const icon = document.createElement('a-text');
+      icon.classList.add('alertIcon');
+      icon.setAttribute('value', isVip ? 'VIP' : '');
+      icon.setAttribute('position', '0 2.35 0');
+      icon.setAttribute('align', 'center');
+      icon.setAttribute('width', '3.2');
+      icon.setAttribute('color', isVip ? '#ffd700' : '#ffae00');
+      icon.setAttribute('side', 'double');
+      g.appendChild(icon);
+
+      g.userData = {
+        isVip,
+        baseColor,
+        patrolA: { x: x - patrolOffsetX, y, z },
+        patrolB: { x: x + patrolOffsetX, y, z },
+        state: 'patrol',
+        suspicion: 0,
+        dirToB: true,
+        lastKnownPos: null,
+        attackCooldown: 0,
+        dying: false
+      };
+
+      dynamicWorld.appendChild(g);
+      guards.push(g);
+      return g;
+    }
+
+    // 4. NPCs Civiles que reaccionan a asesinatos, cuchillos y cadáveres
+    function createCivilian(x, z) {
+      const c = document.createElement('a-entity');
+      c.classList.add('civilian');
+      c.setAttribute('position', `${x} 0 ${z}`);
+
+      const shirtColors = ['#3d5a80', '#52796f', '#7f5539', '#6d597a'];
+      const color = shirtColors[Math.floor(Math.random() * shirtColors.length)];
+      const mesh = buildArticulatedCharacter(color, '#d4a373', false);
+      c.appendChild(mesh);
+
+      const icon = document.createElement('a-text');
+      icon.classList.add('civIcon');
+      icon.setAttribute('value', '');
+      icon.setAttribute('position', '0 2.25 0');
+      icon.setAttribute('align', 'center');
+      icon.setAttribute('width', '3');
+      icon.setAttribute('color', '#ffffff');
+      icon.setAttribute('side', 'double');
+      c.appendChild(icon);
+
+      c.userData = {
+        state: 'wander', // wander | panic
+        targetX: x + (Math.random() - 0.5) * 10,
+        targetZ: z + (Math.random() - 0.5) * 10,
+        panicTimer: 0,
+        dangerPos: null
+      };
+
+      dynamicWorld.appendChild(c);
+      civilians.push(c);
+      return c;
+    }
+
+    // Alertar a civiles y guardias cercanos si el crimen NO fue silencioso
+    function broadcastCrime(crimePos, isSilent) {
+      const witnessRadius = isSilent ? 3.5 : 14.0;
+
+      civilians.forEach(c => {
+        if (!c.parentNode) return;
+        const cPos = c.getAttribute('position');
+        const dist = Math.hypot(crimePos.x - cPos.x, crimePos.z - cPos.z);
+        if (dist < witnessRadius) {
+          c.userData.state = 'panic';
+          c.userData.panicTimer = 8.0;
+          c.userData.dangerPos = { x: crimePos.x, z: crimePos.z };
+          const icon = c.querySelector('.civIcon');
+          if (icon) icon.setAttribute('value', '¡ASESINO! 😱');
+        }
+      });
+
+      if (!isSilent) {
+        guards.forEach(g => {
+          if (!g.parentNode || g.userData.dying) return;
+          const gPos = g.getAttribute('position');
+          if (Math.hypot(crimePos.x - gPos.x, crimePos.z - gPos.z) < 15) {
+            g.userData.lastKnownPos = { x: crimePos.x, z: crimePos.z };
+            g.userData.suspicion = 100;
+            g.userData.state = 'attack';
+            const body = g.querySelector('.body');
+            if (body) body.setAttribute('color', '#ff1e1e');
+            const icon = g.querySelector('.alertIcon');
+            if (icon) icon.setAttribute('value', '!');
+          }
+        });
+      }
+    }
+
+    function spawnBloodSplatter(x, y, z) {
+      const stain = document.createElement('a-circle');
+      stain.setAttribute('rotation', '-90 0 0');
+      stain.setAttribute('radius', '0.55');
+      stain.setAttribute('color', '#7a0000');
+      stain.setAttribute('material', 'opacity: 0.85; transparent: true');
+      stain.setAttribute('position', `${x} ${Math.max(0.02, y - 1.08)} ${z}`);
+      effectsContainer.appendChild(stain);
+
+      for (let i = 0; i < 10; i++) {
+        const drop = document.createElement('a-sphere');
+        const angle = (Math.PI * 2 * i) / 10 + (Math.random() - 0.5) * 0.4;
+        const dist = 0.6 + Math.random() * 1.1;
+        const tx = x + Math.cos(angle) * dist;
+        const tz = z + Math.sin(angle) * dist;
+
+        drop.setAttribute('radius', (0.04 + Math.random() * 0.045).toFixed(3));
+        drop.setAttribute('color', i % 2 === 0 ? '#b30000' : '#800000');
+        drop.setAttribute('position', `${x} ${y} ${z}`);
+        drop.setAttribute('animation__arc', {
+          property: 'position',
+          to: `${tx.toFixed(2)} ${Math.max(0.05, y - 1.05)} ${tz.toFixed(2)}`,
+          dur: 420 + Math.floor(Math.random() * 180),
+          easing: 'easeInQuad'
+        });
+
+        effectsContainer.appendChild(drop);
+        setTimeout(() => {
+          if (drop.parentNode) drop.parentNode.removeChild(drop);
+        }, 1200);
+      }
+    }
+
+    function animateBladeThrust() {
+      blade.removeAttribute('animation__thrust');
+      blade.setAttribute('visible', 'true');
+      blade.setAttribute('position', '0 -0.03 -0.18');
+      blade.setAttribute('animation__thrust', {
+        property: 'position',
+        from: '0 -0.03 -0.18',
+        to: '0 -0.03 -0.44',
+        dur: 140,
+        dir: 'alternate',
+        loop: 1,
+        easing: 'easeOutQuad'
+      });
+    }
+
+    function eliminateGuard(guardEl, impactDir, isSilent = false) {
+      if (!guardEl.parentNode || guardEl.userData.dying) return;
+      guardEl.userData.dying = true;
+
+      const gPos = guardEl.getAttribute('position');
+      spawnBloodSplatter(gPos.x, gPos.y + 1.1, gPos.z);
+      spawnEuphoriaRagdoll(gPos, impactDir, guardEl.userData.baseColor, isSilent);
+      broadcastCrime(gPos, isSilent);
+
+      guardEl.parentNode.removeChild(guardEl);
+      guards = guards.filter(g => g !== guardEl);
+
+      if (currentEvent && (currentEvent.type === 'vip' || currentEvent.type === 'ambush')) {
+        const remaining = currentEvent.targetGuards.filter(tg => tg.parentNode);
+        if (remaining.length === 0) {
+          completeCurrentEvent();
+        }
+      }
+    }
+
+    function createBeacon(x, y, z, color = '#ffd700') {
+      const beacon = document.createElement('a-cylinder');
+      beacon.setAttribute('position', `${x} ${y + 6} ${z}`);
+      beacon.setAttribute('radius', '0.18');
+      beacon.setAttribute('height', '12');
+      beacon.setAttribute('color', color);
+      beacon.setAttribute('material', 'opacity: 0.35; transparent: true');
+      dynamicWorld.appendChild(beacon);
+      return beacon;
+    }
+
+    function clearCurrentEventVisuals() {
+      if (!currentEvent) return;
+      if (currentEvent.beaconEl && currentEvent.beaconEl.parentNode) {
+        currentEvent.beaconEl.parentNode.removeChild(currentEvent.beaconEl);
+      }
+      if (currentEvent.lootEl && currentEvent.lootEl.parentNode) {
+        currentEvent.lootEl.parentNode.removeChild(currentEvent.lootEl);
+      }
+      currentEvent = null;
+    }
+
+    function spawnRandomEvent() {
+      if (gameOver) return;
+      clearCurrentEventVisuals();
+
+      const types = ['vip', 'steal', 'ambush'];
+      const chosenType = types[Math.floor(Math.random() * types.length)];
+      const spot = eventSpawnPoints[Math.floor(Math.random() * eventSpawnPoints.length)];
+
+      if (chosenType === 'vip') {
+        const vip = createGuard(spot.x, spot.y, spot.z, 3.5, true);
+        const beacon = createBeacon(spot.x, spot.y, spot.z, '#ffd700');
+        currentEvent = {
+          type: 'vip',
+          title: 'Elimina al Capitan Templario',
+          targetGuards: [vip],
+          beaconEl: beacon
+        };
+      } else if (chosenType === 'steal') {
+        const loot = document.createElement('a-octahedron');
+        loot.classList.add('grabbable');
+        loot.setAttribute('position', `${spot.x} ${spot.y + 0.55} ${spot.z}`);
+        loot.setAttribute('radius', '0.35');
+        loot.setAttribute('color', '#00e5ff');
+        loot.setAttribute('animation__spin', {
+          property: 'rotation',
+          to: '0 360 0',
+          loop: true,
+          dur: 2500,
+          easing: 'linear'
+        });
+        loot.userData = { isMissionLoot: true, heldBy: null };
+        dynamicWorld.appendChild(loot);
+
+        const guard = createGuard(spot.x + 1.5, spot.y, spot.z + 1.5, 2.5, false);
+        const beacon = createBeacon(spot.x, spot.y, spot.z, '#00e5ff');
+        currentEvent = {
+          type: 'steal',
+          title: 'Roba la Reliquia Azul',
+          targetGuards: [guard],
+          lootEl: loot,
+          beaconEl: beacon
+        };
+      } else {
+        const groundSpots = eventSpawnPoints.filter(s => s.y === 0);
+        const gSpot = groundSpots[Math.floor(Math.random() * groundSpots.length)];
+        const g1 = createGuard(gSpot.x - 2, 0, gSpot.z, 3, false);
+        const g2 = createGuard(gSpot.x + 2, 0, gSpot.z + 1, 3, false);
+        const beacon = createBeacon(gSpot.x, 0, gSpot.z, '#ff3b3b');
+        currentEvent = {
+          type: 'ambush',
+          title: 'Emboscada: Limpia los guardias',
+          targetGuards: [g1, g2],
+          beaconEl: beacon
+        };
+      }
+
+      updateHud('Nuevo evento activo!');
+    }
+
+    function completeCurrentEvent() {
+      eventsCompleted += 1;
+      playerHealth = Math.min(100, playerHealth + 20);
+      clearCurrentEventVisuals();
+      updateHud('EVENTO COMPLETADO! (+20 Vida)');
+      setTimeout(() => {
+        if (!gameOver) spawnRandomEvent();
+      }, 3000);
+    }
+
+    function isPlayerInHidingSpot(pos) {
+      return hidingSpots.some(spot => {
+        const sPos = spot.getAttribute('position');
+        const w = parseFloat(spot.getAttribute('width') || 2.5);
+        const d = parseFloat(spot.getAttribute('depth') || 2.5);
+        const h = parseFloat(spot.getAttribute('height') || 1.5);
+        return Math.abs(pos.x - sPos.x) <= w / 2 + 0.35 &&
+               Math.abs(pos.z - sPos.z) <= d / 2 + 0.35 &&
+               pos.y <= h + 0.4;
+      });
+    }
+
+    function resetGame() {
+      rig.removeAttribute('animation__jump');
+      rig.removeAttribute('animation__parkour');
+      rig.setAttribute('position', '0 12.1 -12');
+      playerHealth = 100;
+      eventsCompleted = 0;
+      isLeaping = false;
+      isParkouring = false;
+      isHidden = false;
+      gameOver = false;
+      currentEvent = null;
+
+      while (effectsContainer.firstChild) effectsContainer.removeChild(effectsContainer.firstChild);
+      while (dynamicWorld.firstChild) dynamicWorld.removeChild(dynamicWorld.firstChild);
+      while (ragdollContainer.firstChild) ragdollContainer.removeChild(ragdollContainer.firstChild);
+
+      guards = [];
+      civilians = [];
+      corpses = [];
+      flyingKnives = [];
+      activeRagdolls = [];
+
+      document.querySelectorAll('[grip-grabber]').forEach(handEl => {
+        const comp = handEl.components['grip-grabber'];
+        if (comp && comp.heldItem) comp.heldItem = null;
+      });
+
+      // Cuchillos lanzables repartidos en la torre y patio
+      spawnThrowingKnife(1.2, 12.25, -11.5);
+      spawnThrowingKnife(-1.2, 12.25, -11.5);
+      spawnThrowingKnife(2.2, 0.25, -5);
+      spawnThrowingKnife(-2.5, 0.25, -4);
+
+      // Guardias y civiles iniciales
+      createGuard(-8, 0, -6, 6, false);
+      createGuard(7, 0, -10, 6, false);
+
+      createCivilian(-2, -1);
+      createCivilian(3, -2);
+      createCivilian(-5, 2);
+      createCivilian(5, 1);
+
+      spawnRandomEvent();
+    }
+
+    // 5. Agarre con gatillo trasero + lanzamiento de cuchillo con botón Y
+    AFRAME.registerComponent('grip-grabber', {
+      init: function () {
+        this.heldItem = null;
+
+        this.releaseItem = (throwImpulse = false) => {
+          if (!this.heldItem) return;
+          const item = this.heldItem;
+          this.heldItem = null;
+          item.userData.heldBy = null;
+
+          const worldPos = new THREE.Vector3();
+          item.object3D.getWorldPosition(worldPos);
+          const dropY = Math.max(0.22, worldPos.y);
+
+          dynamicWorld.appendChild(item);
+          item.setAttribute('position', { x: worldPos.x, y: dropY, z: worldPos.z });
+
+          if (throwImpulse && item.userData && item.userData.isKnife) {
+            const cam = rig.querySelector('a-camera');
+            const dir = new THREE.Vector3();
+            cam.object3D.getWorldDirection(dir);
+            // En Three.js/A-Frame la cámara mira hacia -Z local
+            dir.negate().normalize();
+
+            item.setAttribute('rotation', `${Math.asin(dir.y) * (180 / Math.PI)} ${Math.atan2(-dir.x, -dir.z) * (180 / Math.PI)} 0`);
+            flyingKnives.push({
+              el: item,
+              vx: dir.x * 19,
+              vy: dir.y * 19 + 1.2,
+              vz: dir.z * 19,
+              life: 2.2
+            });
+            updateHud('¡Cuchillo lanzado!');
+            return;
+          }
+
+          // Ruido de distracción al soltar normal
+          guards.forEach(g => {
+            if (!g.parentNode) return;
+            const gPos = g.getAttribute('position');
+            if (Math.hypot(worldPos.x - gPos.x, worldPos.z - gPos.z) < 7.5) {
+              g.userData.lastKnownPos = { x: worldPos.x, z: worldPos.z };
+              g.userData.suspicion = Math.max(g.userData.suspicion, 55);
+              if (g.userData.state === 'patrol') {
+                g.userData.state = 'suspicious';
+                const body = g.querySelector('.body');
+                if (body) body.setAttribute('color', '#c97a16');
+              }
+            }
+          });
+        };
+
+        this.el.addEventListener('gripdown', () => {
+          if (gameOver || this.heldItem) return;
+
+          const rigPos = rig.getAttribute('position');
+          const handWorldPos = new THREE.Vector3();
+          this.el.object3D.getWorldPosition(handWorldPos);
+          const hx = handWorldPos.lengthSq() > 0 ? handWorldPos.x : rigPos.x;
+          const hy = handWorldPos.lengthSq() > 0 ? handWorldPos.y : rigPos.y + 1.2;
+          const hz = handWorldPos.lengthSq() > 0 ? handWorldPos.z : rigPos.z - 0.3;
+
+          const allItems = Array.from(document.querySelectorAll('.grabbable'));
+          let closest = null;
+          let bestDist = 2.8;
+
+          allItems.forEach(item => {
+            if (item.userData && item.userData.heldBy) return;
+            const iPos = item.getAttribute('position');
+            const d = Math.hypot(hx - iPos.x, hy - iPos.y, hz - iPos.z);
+            if (d < bestDist) {
+              bestDist = d;
+              closest = item;
+            }
+          });
+
+          if (closest) {
+            if (closest.userData && closest.userData.isMissionLoot && currentEvent && currentEvent.type === 'steal') {
+              completeCurrentEvent();
+              return;
+            }
+
+            this.heldItem = closest;
+            closest.userData.heldBy = this.el;
+            this.el.appendChild(closest);
+            closest.setAttribute('position', '0 -0.03 -0.15');
+            closest.setAttribute('rotation', '0 0 0');
+            updateHud(closest.userData.isKnife
+              ? 'Cuchillo listo! Presiona Y o suelta Grip para lanzar.'
+              : 'Objeto agarrado. Suelta el gatillo trasero.');
+          }
+        });
+
+        this.el.addEventListener('gripup', () => {
+          if (this.heldItem) {
+            const isKnife = this.heldItem.userData && this.heldItem.userData.isKnife;
+            this.releaseItem(isKnife);
+          }
+        });
+      }
+    });
+
+    function triggerParkourOrClimb() {
+      if (gameOver || isLeaping || isParkouring) return;
+
+      const cam = rig.querySelector('a-camera');
+      const rotY = cam.object3D.rotation.y;
+      const pos = rig.getAttribute('position');
+      const forwardX = -Math.sin(rotY);
+      const forwardZ = -Math.cos(rotY);
+
+      let targetClimb = null;
+      let bestClimbDist = 3.6;
+
+      climbables.forEach(el => {
+        const bPos = el.getAttribute('position');
+        const h = parseFloat(el.getAttribute('height') || 4);
+        const topY = bPos.y + h / 2;
+
+        if (topY > pos.y + 0.4) {
+          const dx = bPos.x - pos.x;
+          const dz = bPos.z - pos.z;
+          const dist = Math.hypot(dx, dz);
+          const dot = (dx / (dist || 1)) * forwardX + (dz / (dist || 1)) * forwardZ;
+
+          if (dist < bestClimbDist && dot > 0.35) {
+            bestClimbDist = dist;
+            targetClimb = { x: bPos.x, y: topY, z: bPos.z };
+          }
+        }
+      });
+
+      isParkouring = true;
+
+      if (targetClimb) {
+        updateHud('Trepando muro...');
+        rig.setAttribute('animation__parkour', {
+          property: 'position',
+          to: `${targetClimb.x} ${targetClimb.y} ${targetClimb.z}`,
+          dur: 650,
+          easing: 'easeOutQuad'
+        });
+        setTimeout(() => {
+          isParkouring = false;
+          updateHud('En azotea/muro');
+        }, 680);
+        return;
+      }
+
+      const jumpDist = 3.2;
+      const destX = pos.x + forwardX * jumpDist;
+      const destZ = pos.z + forwardZ * jumpDist;
+
+      let landingY = 0;
+      climbables.forEach(el => {
+        const bPos = el.getAttribute('position');
+        const w = parseFloat(el.getAttribute('width') || 4);
+        const d = parseFloat(el.getAttribute('depth') || 4);
+        const h = parseFloat(el.getAttribute('height') || 4);
+        const topY = bPos.y + h / 2;
+
+        if (Math.abs(destX - bPos.x) <= w / 2 + 0.5 && Math.abs(destZ - bPos.z) <= d / 2 + 0.5) {
+          if (topY > landingY && pos.y >= topY - 1.5) landingY = topY;
+        }
+      });
+
+      updateHud('Salto de parkour...');
+      rig.setAttribute('animation__parkour', {
+        property: 'position',
+        to: `${destX.toFixed(2)} ${landingY.toFixed(2)} ${destZ.toFixed(2)}`,
+        dur: 450,
+        easing: 'easeOutQuad'
+      });
+
+      setTimeout(() => {
+        isParkouring = false;
+      }, 480);
+    }
+
+    AFRAME.registerComponent('left-hand-controls', {
+      init: function () {
+        this.el.addEventListener('thumbstickmoved', (evt) => {
+          stickX = evt.detail.x;
+          stickY = evt.detail.y;
+        });
+        this.el.addEventListener('xbuttondown', () => {
+          triggerParkourOrClimb();
+        });
+        // Botón Y para lanzar el cuchillo que tengas en cualquiera de las dos manos
+        this.el.addEventListener('ybuttondown', () => {
+          document.querySelectorAll('[grip-grabber]').forEach(handEl => {
+            const comp = handEl.components['grip-grabber'];
+            if (comp && comp.heldItem && comp.heldItem.userData && comp.heldItem.userData.isKnife) {
+              comp.releaseItem(true);
+            }
+          });
+        });
+      }
+    });
+
+    AFRAME.registerComponent('player-controller', {
+      tick: function (time, delta) {
+        if (gameOver || isLeaping || isParkouring) return;
+
+        const dt = delta / 1000;
+        const pos = this.el.getAttribute('position');
+
+        if (Math.abs(stickX) > 0.12 || Math.abs(stickY) > 0.12) {
+          const cam = this.el.querySelector('a-camera');
+          const rotY = cam.object3D.rotation.y;
+          const speed = 4.6 * dt;
+
+          pos.x += (stickX * Math.cos(rotY) + stickY * Math.sin(rotY)) * speed;
+          pos.z += (stickY * Math.cos(rotY) - stickX * Math.sin(rotY)) * speed;
+        }
+
+        let supportY = 0;
+        climbables.forEach(el => {
+          const bPos = el.getAttribute('position');
+          const w = parseFloat(el.getAttribute('width') || 4);
+          const d = parseFloat(el.getAttribute('depth') || 4);
+          const h = parseFloat(el.getAttribute('height') || 4);
+          const topY = bPos.y + h / 2;
+
+          if (Math.abs(pos.x - bPos.x) <= w / 2 && Math.abs(pos.z - bPos.z) <= d / 2 && pos.y >= topY - 0.5) {
+            if (topY > supportY) supportY = topY;
+          }
+        });
+
+        const inHaystack = Math.abs(pos.x) < 2.25 && Math.abs(pos.z + 4) < 2.25;
+        if (inHaystack && pos.y < 1.6) {
+          supportY = 0.2;
+        }
+
+        if (pos.y > supportY) {
+          pos.y = Math.max(supportY, pos.y - 9.8 * dt);
+        }
+
+        this.el.setAttribute('position', pos);
+
+        if (currentEvent && currentEvent.type === 'steal' && currentEvent.lootEl) {
+          const lPos = currentEvent.lootEl.getAttribute('position');
+          if (Math.hypot(pos.x - lPos.x, pos.z - lPos.z) < 1.6 && Math.abs(pos.y - lPos.y) < 1.8) {
+            completeCurrentEvent();
+          }
+        }
+
+        const nowHidden = isPlayerInHidingSpot(pos);
+        if (nowHidden !== isHidden) {
+          isHidden = nowHidden;
+          updateHud(isHidden ? 'ESCONDIDO - Sigilo activo' : 'Fuera de escondite');
+        }
+      }
+    });
+
+    AFRAME.registerComponent('right-hand-controls', {
+      init: function () {
+        this.el.addEventListener('triggerdown', () => {
+          animateBladeThrust();
+          if (gameOver) return;
+
+          const pPos = rig.getAttribute('position');
+          let hit = false;
+          let wasSilent = false;
+
+          guards.forEach(g => {
+            if (!g.parentNode || g.userData.dying) return;
+            const gPos = g.getAttribute('position');
+            const dist = Math.hypot(pPos.x - gPos.x, pPos.z - gPos.z);
+
+            if (dist < 2.8 && Math.abs(pPos.y - gPos.y) < 2.0) {
+              // Verificar si es muerte silenciosa (el guardia no te había detectado o le llegas por la espalda)
+              const gRotRad = (g.getAttribute('rotation').y || 0) * (Math.PI / 180);
+              const gForwardX = Math.sin(gRotRad);
+              const gForwardZ = Math.cos(gRotRad);
+              const toPlayerX = (pPos.x - gPos.x) / (dist || 1);
+              const toPlayerZ = (pPos.z - gPos.z) / (dist || 1);
+              const behindDot = gForwardX * toPlayerX + gForwardZ * toPlayerZ;
+
+              const silentKill = g.userData.state === 'patrol' || behindDot < -0.2;
+              wasSilent = silentKill;
+
+              eliminateGuard(g, { x: -toPlayerX, z: -toPlayerZ }, silentKill);
+              hit = true;
+            }
+          });
+
+          if (hit) {
+            updateHud(wasSilent
+              ? 'MUERTE SILENCIOSA! Nadie escucho nada.'
+              : 'Asesinato en combate! Los civiles huyen.');
+          }
+        });
+
+        this.el.addEventListener('triggerup', () => {
+          setTimeout(() => {
+            blade.setAttribute('visible', 'false');
+          }, 160);
+        });
+
+        this.el.addEventListener('abuttondown', () => {
+          if (gameOver || isLeaping) return;
+          isLeaping = true;
+          updateHud('SALTO DE FE AL PAJAR...');
+          rig.setAttribute('animation__jump', {
+            property: 'position',
+            to: '0 0.2 -4',
+            dur: 1150,
+            easing: 'easeInQuad'
+          });
+          setTimeout(() => {
+            isLeaping = false;
+            isHidden = true;
+            updateHud('En el pajar (oculto).');
+          }, 1200);
+        });
+
+        this.el.addEventListener('bbuttondown', () => {
+          resetGame();
+        });
+      }
+    });
+
+    // 6. Loop principal: Cuchillos voladores, Ragdolls, Civiles y Guardias
+    AFRAME.registerComponent('world-systems', {
+      tick: function (time, delta) {
+        if (gameOver) return;
+        const dt = delta / 1000;
+        const pPos = rig.getAttribute('position');
+        const hiddenNow = isPlayerInHidingSpot(pPos);
+
+        // A. Actualizar cuchillos lanzados
+        for (let i = flyingKnives.length - 1; i >= 0; i--) {
+          const fk = flyingKnives[i];
+          fk.life -= dt;
+          fk.vy -= 9.8 * dt;
+
+          const kPos = fk.el.getAttribute('position');
+          kPos.x += fk.vx * dt;
+          kPos.y += fk.vy * dt;
+          kPos.z += fk.vz * dt;
+          fk.el.setAttribute('position', kPos);
+
+          // Impacto contra guardias
+          let hitGuard = null;
+          guards.forEach(g => {
+            if (!g.parentNode || g.userData.dying) return;
+            const gPos = g.getAttribute('position');
+            if (Math.hypot(kPos.x - gPos.x, kPos.z - gPos.z) < 0.9 && Math.abs(kPos.y - (gPos.y + 1.0)) < 1.1) {
+              hitGuard = g;
+            }
+          });
+
+          if (hitGuard) {
+            const speedMag = Math.hypot(fk.vx, fk.vz) || 1;
+            eliminateGuard(hitGuard, { x: fk.vx / speedMag, z: fk.vz / speedMag }, true);
+            updateHud('¡BAJA SILENCIOSA CON CUCHILLO LANZADO!');
+            if (fk.el.parentNode) fk.el.parentNode.removeChild(fk.el);
+            flyingKnives.splice(i, 1);
+            continue;
+          }
+
+          // Impacto contra civiles (crimen público)
+          let hitCiv = null;
+          civilians.forEach(c => {
+            if (!c.parentNode) return;
+            const cPos = c.getAttribute('position');
+            if (Math.hypot(kPos.x - cPos.x, kPos.z - cPos.z) < 0.9 && Math.abs(kPos.y - 1.0) < 1.1) {
+              hitCiv = c;
+            }
+          });
+
+          if (hitCiv) {
+            const cPos = hitCiv.getAttribute('position');
+            const speedMag = Math.hypot(fk.vx, fk.vz) || 1;
+            spawnBloodSplatter(cPos.x, 1.1, cPos.z);
+            spawnEuphoriaRagdoll(cPos, { x: fk.vx / speedMag, z: fk.vz / speedMag }, '#3d5a80', false);
+            broadcastCrime(cPos, false);
+            hitCiv.parentNode.removeChild(hitCiv);
+            civilians = civilians.filter(c => c !== hitCiv);
+            updateHud('¡CRIMEN CIVIL! Guardias en alerta.');
+            if (fk.el.parentNode) fk.el.parentNode.removeChild(fk.el);
+            flyingKnives.splice(i, 1);
+            continue;
+          }
+
+          // Caída al suelo: queda recuperable de nuevo
+          if (kPos.y <= 0.12 || fk.life <= 0) {
+            kPos.y = Math.max(0.12, kPos.y);
+            fk.el.setAttribute('position', kPos);
+            fk.el.setAttribute('rotation', '0 0 90');
+            flyingKnives.splice(i, 1);
+          }
+        }
+
+        // B. Actualizar físicas de Ragdoll articulado
+        activeRagdolls.forEach(rag => {
+          rag.parts.forEach(p => {
+            if (p.settled) return;
+            p.vy -= 14.0 * dt;
+            const pos = p.el.getAttribute('position');
+            const rot = p.el.getAttribute('rotation');
+
+            pos.x += p.vx * dt;
+            pos.y += p.vy * dt;
+            pos.z += p.vz * dt;
+
+            rot.x += p.rx * dt;
+            rot.y += p.ry * dt;
+            rot.z += p.rz * dt;
+
+            const minY = p.floorY + p.halfH * 0.45;
+            if (pos.y <= minY) {
+              pos.y = minY;
+              p.vy = -p.vy * 0.22;
+              p.vx *= 0.45;
+              p.vz *= 0.45;
+              p.rx *= 0.3;
+              p.ry *= 0.3;
+              p.rz *= 0.3;
+              if (Math.abs(p.vy) < 0.25 && Math.hypot(p.vx, p.vz) < 0.15) {
+                p.settled = true;
+              }
+            }
+
+            p.el.setAttribute('position', pos);
+            p.el.setAttribute('rotation', rot);
+          });
+        });
+
+        // C. IA de Civiles (pasean y reaccionan si ven crímenes o cadáveres)
+        civilians.forEach(c => {
+          if (!c.parentNode) return;
+          const ud = c.userData;
+          const pos = c.getAttribute('position');
+          const icon = c.querySelector('.civIcon');
+
+          // Revisar si ven algún cadáver cercano
+          if (ud.state !== 'panic') {
+            const seenCorpse = corpses.find(cp => Math.hypot(cp.x - pos.x, cp.z - pos.z) < 9.5);
+            if (seenCorpse) {
+              ud.state = 'panic';
+              ud.panicTimer = 8.0;
+              ud.dangerPos = { x: seenCorpse.x, z: seenCorpse.z };
+              if (icon) icon.setAttribute('value', '¡UN CADAVER! 😱');
+              // Un civil que encuentra un cadáver alerta al guardia más cercano
+              guards.forEach(g => {
+                if (!g.parentNode) return;
+                const gPos = g.getAttribute('position');
+                if (Math.hypot(pos.x - gPos.x, pos.z - gPos.z) < 14) {
+                  g.userData.lastKnownPos = { x: seenCorpse.x, z: seenCorpse.z };
+                  g.userData.suspicion = Math.max(g.userData.suspicion, 75);
+                  if (g.userData.state === 'patrol') g.userData.state = 'suspicious';
+                }
+              });
+            }
+          }
+
+          if (ud.state === 'panic') {
+            ud.panicTimer -= dt;
+            if (ud.panicTimer <= 0) {
+              ud.state = 'wander';
+              if (icon) icon.setAttribute('value', '');
+              return;
+            }
+            const awayX = pos.x - (ud.dangerPos ? ud.dangerPos.x : pPos.x);
+            const awayZ = pos.z - (ud.dangerPos ? ud.dangerPos.z : pPos.z);
+            const dist = Math.hypot(awayX, awayZ) || 1;
+            const runSpeed = 4.2 * dt;
+            pos.x = Math.max(-28, Math.min(28, pos.x + (awayX / dist) * runSpeed));
+            pos.z = Math.max(-28, Math.min(28, pos.z + (awayZ / dist) * runSpeed));
+            c.setAttribute('position', pos);
+            c.setAttribute('rotation', `0 ${Math.atan2(awayX, awayZ) * (180 / Math.PI)} 0`);
+          } else {
+            const dx = ud.targetX - pos.x;
+            const dz = ud.targetZ - pos.z;
+            const dist = Math.hypot(dx, dz);
+            if (dist < 0.5) {
+              ud.targetX = (Math.random() - 0.5) * 18;
+              ud.targetZ = (Math.random() - 0.5) * 16;
+            } else {
+              const walkSpeed = 1.35 * dt;
+              pos.x += (dx / dist) * walkSpeed;
+              pos.z += (dz / dist) * walkSpeed;
+              c.setAttribute('position', pos);
+              c.setAttribute('rotation', `0 ${Math.atan2(dx, dz) * (180 / Math.PI)} 0`);
+            }
+          }
+        });
+
+        // D. IA de Guardias
+        guards.forEach(g => {
+          if (!g.parentNode || g.userData.dying) return;
+
+          const ud = g.userData;
+          const pos = g.getAttribute('position');
+          const body = g.querySelector('.body');
+          const icon = g.querySelector('.alertIcon');
+          if (ud.attackCooldown > 0) ud.attackCooldown -= dt;
+
+          const sameLevel = Math.abs(pPos.y - pos.y) < 2.4;
+          const playerVisible = !hiddenNow && sameLevel;
+
+          const dx = pPos.x - pos.x;
+          const dz = pPos.z - pos.z;
+          const distToPlayer = Math.hypot(dx, dz);
+          const canSpot = playerVisible && distToPlayer < 11;
+
+          if (canSpot) {
+            const angle = Math.atan2(dx, dz) * (180 / Math.PI);
+            g.setAttribute('rotation', `0 ${angle} 0`);
+            ud.lastKnownPos = { x: pPos.x, z: pPos.z };
+
+            const gainRate = distToPlayer < 5 ? 65 : 35;
+            ud.suspicion = Math.min(100, ud.suspicion + gainRate * dt);
+
+            if (ud.suspicion < 100) {
+              ud.state = 'suspicious';
+              if (body) body.setAttribute('color', '#c97a16');
+              if (icon) icon.setAttribute('value', `? ${Math.floor(ud.suspicion)}%`);
+            } else {
+              ud.state = 'attack';
+              if (body) body.setAttribute('color', '#ff1e1e');
+              if (icon) icon.setAttribute('value', '!');
+            }
+          } else {
+            ud.suspicion = Math.max(0, ud.suspicion - 18 * dt);
+            if (ud.suspicion === 0 && ud.state === 'suspicious') {
+              ud.state = 'patrol';
+              if (body) body.setAttribute('color', ud.baseColor);
+              if (icon) icon.setAttribute('value', ud.isVip ? 'VIP' : '');
+            }
+          }
+
+          if (ud.state === 'patrol') {
+            const target = ud.dirToB ? ud.patrolB : ud.patrolA;
+            const mdx = target.x - pos.x;
+            const mdz = target.z - pos.z;
+            const mDist = Math.hypot(mdx, mdz);
+
+            if (mDist < 0.3) {
+              ud.dirToB = !ud.dirToB;
+            } else {
+              const speed = 2.2 * dt;
+              pos.x += (mdx / mDist) * speed;
+              pos.z += (mdz / mDist) * speed;
+              g.setAttribute('position', pos);
+              g.setAttribute('rotation', `0 ${Math.atan2(mdx, mdz) * (180 / Math.PI)} 0`);
+            }
+          } else if (ud.state === 'suspicious') {
+            if (icon) icon.setAttribute('value', `? ${Math.floor(ud.suspicion)}%`);
+          } else if (ud.state === 'attack') {
+            if (!playerVisible || distToPlayer > 14) {
+              if (ud.lastKnownPos) {
+                const ldx = ud.lastKnownPos.x - pos.x;
+                const ldz = ud.lastKnownPos.z - pos.z;
+                const lDist = Math.hypot(ldx, ldz);
+                if (lDist > 0.5) {
+                  const speed = 3.2 * dt;
+                  pos.x += (ldx / lDist) * speed;
+                  pos.z += (ldz / lDist) * speed;
+                  g.setAttribute('position', pos);
+                } else {
+                  ud.state = 'suspicious';
+                  ud.suspicion = 40;
+                  if (body) body.setAttribute('color', '#c97a16');
+                }
+              }
+            } else if (distToPlayer > 1.7) {
+              const speed = 3.6 * dt;
+              pos.x += (dx / distToPlayer) * speed;
+              pos.z += (dz / distToPlayer) * speed;
+              g.setAttribute('position', pos);
+            } else if (ud.attackCooldown <= 0) {
+              ud.attackCooldown = 1.2;
+              playerHealth = Math.max(0, playerHealth - 25);
+              updateHud('TE ATACARON! (-25 Vida)');
+
+              if (playerHealth <= 0) {
+                gameOver = true;
+                hud.setAttribute('value', `DESINCRONIZADO! Misiones: ${eventsCompleted}\nPresiona B para reiniciar.`);
+              }
+            }
+          }
+        });
+      }
+    });
+
+    resetGame();
+  </script>
+</body>
+</html>
